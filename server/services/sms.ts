@@ -2,12 +2,12 @@
 import { randomInt } from 'crypto';
 
 interface SMSProvider {
-  sendSMS(to: string, message: string): Promise<void>;
+  sendSMS(to: string, message: string, templateId?: string): Promise<void>;
 }
 
 class MockSMSProvider implements SMSProvider {
-  async sendSMS(to: string, message: string): Promise<void> {
-    console.log(`[MOCK SMS] Sending to ${to}: ${message}`);
+  async sendSMS(to: string, message: string, templateId?: string): Promise<void> {
+    console.log(`[MOCK SMS] Sending to ${to} (template: ${templateId ?? 'none'}): ${message}`);
     const otpMatch = message.match(/\b\d{6}\b/);
     if (otpMatch) {
       console.log(`[MOCK SMS] OTP Code: ${otpMatch[0]}`);
@@ -18,22 +18,20 @@ class MockSMSProvider implements SMSProvider {
 class MyDreamsTechSMSProvider implements SMSProvider {
   private readonly apiKey: string;
   private readonly senderId: string;
-  private readonly templateId: string;
   private readonly endpoint = 'http://app.mydreamstechnology.in/vb/apikey.php';
 
   constructor() {
-    this.apiKey = process.env.MDT_SMS_API_KEY || 'z2dPfGJmu1UOWev9';
-    this.senderId = process.env.MDT_SMS_SENDER_ID || 'PLATRR';
-    this.templateId = process.env.MDT_SMS_TEMPLATE_ID || '1707176121738738158';
+    this.apiKey = process.env.MDT_SMS_API_KEY || 'BLZqVzWRDT7oNYS0';
+    this.senderId = process.env.MDT_SMS_SENDER_ID || 'CLINEK';
   }
 
-  async sendSMS(to: string, message: string): Promise<void> {
+  async sendSMS(to: string, message: string, templateId?: string): Promise<void> {
     const params = new URLSearchParams({
       apikey: this.apiKey,
       senderid: this.senderId,
       number: to,
       message,
-      templateid: this.templateId,
+      ...(templateId && { templateid: templateId }),
     });
 
     const url = `${this.endpoint}?${params.toString()}`;
@@ -58,8 +56,13 @@ class MyDreamsTechSMSProvider implements SMSProvider {
 
 class SMSService {
   private provider: SMSProvider;
+  private readonly loginOtpTemplateId: string;
+  private readonly resetPasswordOtpTemplateId: string;
 
   constructor() {
+    this.loginOtpTemplateId = process.env.MDT_SMS_LOGIN_TEMPLATE_ID || '1707177977132634973';
+    this.resetPasswordOtpTemplateId = process.env.MDT_SMS_RESET_TEMPLATE_ID || '1707177977143946326';
+
     if (process.env.MDT_SMS_MOCK === 'true') {
       this.provider = new MockSMSProvider();
       console.log('SMS Service: Using mock provider');
@@ -74,9 +77,15 @@ class SMSService {
   }
 
   async sendOTP(phoneNumber: string, otp: string): Promise<void> {
-    // Must match registered DLT template exactly (template ID: 1707176121738738158)
-    const message = `${otp} is your OTP to login. Valid for 10 minutes. Don't share this OTP with anyone. More details visit www.plattr.co.in - PLATTR`;
-    await this.provider.sendSMS(phoneNumber, message);
+    // Must match registered DLT template exactly (template ID: 1707177977132634973)
+    const message = `${otp} is your OTP to login. Valid for 10 minutes. Don't share this OTP with anyone. More details visit https://clinik.co.in/ - CLINEK`;
+    await this.provider.sendSMS(phoneNumber, message, this.loginOtpTemplateId);
+  }
+
+  async sendPasswordResetOTP(phoneNumber: string, otp: string): Promise<void> {
+    // Must match registered DLT template exactly (template ID: 1707177977143946326)
+    const message = `${otp} is OTP to Reset your password. Valid for 10 minutes. Don't share this OTP with anyone. More details visit https://clinik.co.in/ - CLINEK`;
+    await this.provider.sendSMS(phoneNumber, message, this.resetPasswordOtpTemplateId);
   }
 
   async sendAppointmentReminder(phoneNumber: string, doctorName: string, appointmentTime: string): Promise<void> {
