@@ -458,7 +458,7 @@ export default function DoctorSchedulesPage() {
       <NavHeader />
       <div className="flex flex-col gap-4 my-6">
         <div className="flex items-center gap-4">
-          <h1 className="text-3xl font-bold">Doctor Schedules</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold">Doctor Schedules</h1>
           <NavigationButtons />
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -520,6 +520,7 @@ export default function DoctorSchedulesPage() {
           ) : (schedules && schedules.length > 0) ? (
             <Card>
               <CardContent className="pt-6">
+                <div className="overflow-x-auto">
                 <Table>
                   <TableCaption>List of doctor schedules</TableCaption>
                   <TableHeader>
@@ -591,6 +592,7 @@ export default function DoctorSchedulesPage() {
                     ))}
                   </TableBody>
                 </Table>
+                </div>
               </CardContent>
             </Card>
           ) : (

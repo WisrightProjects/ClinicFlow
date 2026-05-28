@@ -630,8 +630,8 @@ export default function PatientClinicDetails() {
             </div>
           </div>
           <div className="flex-1">
-            <div className="flex items-center justify-between">
-              <h1 className="text-3xl font-bold">{clinic.name}</h1>
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+              <h1 className="text-2xl sm:text-3xl font-bold flex-1">{clinic.name}</h1>
               <NavigationButtons />
             </div>
             <div className="flex items-start gap-2 mt-2">
@@ -760,22 +760,24 @@ export default function PatientClinicDetails() {
                     </div>
                   ) : (
                     <>
-                      <TabsList className="mb-4">
-                        {processedSchedules.map((schedule) => (
-                          <TabsTrigger key={schedule.id} value={schedule.id}>
-                            <div className="text-center">
-                              <div className="font-medium">{schedule.day}</div>
-                              <div className="text-xs text-muted-foreground">{schedule.date}</div>
-                            </div>
-                          </TabsTrigger>
-                        ))}
-                      </TabsList>
+                      <div className="overflow-x-auto pb-1">
+                        <TabsList className="mb-4 min-w-max">
+                          {processedSchedules.map((schedule) => (
+                            <TabsTrigger key={schedule.id} value={schedule.id}>
+                              <div className="text-center">
+                                <div className="font-medium">{schedule.day}</div>
+                                <div className="text-xs text-muted-foreground">{schedule.date}</div>
+                              </div>
+                            </TabsTrigger>
+                          ))}
+                        </TabsList>
+                      </div>
                       
                       {processedSchedules.map((schedule) => (
                         <TabsContent key={schedule.id} value={schedule.id}>
                           <div className="mb-4">
-                            <div className="flex items-center justify-between">
-                              <p className="text-sm text-muted-foreground">
+                            <div className="flex flex-col sm:flex-row sm:items-start gap-2">
+                              <p className="text-sm text-muted-foreground flex-1">
                                 <span className="font-medium">Available Time:</span> {schedule.slots[0] || 'No slots'}
                                 {schedule.maxTokens && (
                                   <> | <span className="font-medium">Max Tokens:</span> {schedule.maxTokens}</>

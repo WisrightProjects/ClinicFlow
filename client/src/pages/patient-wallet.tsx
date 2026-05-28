@@ -17,17 +17,17 @@ export default function PatientWallet() {
       <div className="flex-1">
         <div className="container mx-auto py-8 px-4">
           {/* Header */}
-          <div className="flex items-center gap-4 mb-6">
-            <Button 
-              variant="ghost" 
+          <div className="flex flex-wrap items-center gap-4 mb-6">
+            <Button
+              variant="ghost"
               size="sm"
               onClick={() => setLocation('/')}
-              className="gap-2"
+              className="gap-2 shrink-0"
             >
               <ArrowLeft className="h-4 w-4" />
               Back to Home
             </Button>
-            <h1 className="text-3xl font-bold">My Wallet</h1>
+            <h1 className="text-2xl sm:text-3xl font-bold">My Wallet</h1>
           </div>
 
           {/* Wallet Content */}

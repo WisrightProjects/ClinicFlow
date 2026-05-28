@@ -9,6 +9,8 @@ import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import { useLocation } from "wouter";
+import { NavHeader } from "@/components/nav-header";
+import { NavigationButtons } from "@/components/navigation-buttons";
 
 export default function PatientFavorites() {
   const { user } = useAuth();
@@ -87,46 +89,60 @@ export default function PatientFavorites() {
 
   if (!user || user.role !== 'patient') {
     return (
-      <div className="container mx-auto py-8 px-4">
-        <div className="text-center py-12">
-          <h1 className="text-2xl font-bold text-gray-900 mb-4">Access Denied</h1>
-          <p className="text-gray-600">You must be logged in as a patient to view favorites.</p>
-        </div>
+      <div className="min-h-screen bg-gray-50">
+        <NavHeader />
+        <main className="container mx-auto py-8 px-4">
+          <div className="text-center py-12">
+            <h1 className="text-2xl font-bold text-gray-900 mb-4">Access Denied</h1>
+            <p className="text-gray-600">You must be logged in as a patient to view favorites.</p>
+          </div>
+        </main>
       </div>
     );
   }
 
   if (isLoading) {
     return (
-      <div className="container mx-auto py-8 px-4">
-        <div className="text-center py-12">
-          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
-          <p className="text-muted-foreground">Loading your favorites...</p>
-        </div>
+      <div className="min-h-screen bg-gray-50">
+        <NavHeader />
+        <main className="container mx-auto py-8 px-4">
+          <div className="text-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
+            <p className="text-muted-foreground">Loading your favorites...</p>
+          </div>
+        </main>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="container mx-auto py-8 px-4">
-        <div className="text-center py-12">
-          <p className="text-red-500">Error loading favorites. Please try again later.</p>
-        </div>
+      <div className="min-h-screen bg-gray-50">
+        <NavHeader />
+        <main className="container mx-auto py-8 px-4">
+          <div className="text-center py-12">
+            <p className="text-red-500">Error loading favorites. Please try again later.</p>
+          </div>
+        </main>
       </div>
     );
   }
 
   return (
-    <div className="container mx-auto py-8 px-4">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold flex items-center gap-2">
-          <Star className="h-8 w-8 text-yellow-400 fill-yellow-400" />
-          My Favorite Schedules
-        </h1>
-        <p className="text-muted-foreground mt-2">
-          Manage your favorite doctor schedules. You'll get notified when they become available for booking.
-        </p>
+    <div className="min-h-screen bg-gray-50">
+      <NavHeader />
+      <main className="container mx-auto py-8 px-4">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-6">
+        <div className="flex-1">
+          <h1 className="text-2xl sm:text-3xl font-bold flex items-center gap-2">
+            <Star className="h-7 w-7 text-yellow-400 fill-yellow-400" />
+            My Favorite Schedules
+          </h1>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Manage your favorite doctor schedules. You'll get notified when they become available for booking.
+          </p>
+        </div>
+        <NavigationButtons />
       </div>
 
       {favorites.length === 0 ? (
@@ -215,6 +231,7 @@ export default function PatientFavorites() {
           ))}
         </div>
       )}
+      </main>
     </div>
   );
 }

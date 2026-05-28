@@ -634,7 +634,7 @@ export default function PatientDashboard() {
       {/* Main Content */}
       <div className="flex-1">
         <div className="container mx-auto py-8 px-4">
-          <h1 className="text-3xl font-bold mb-6">Find Healthcare Near You</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold mb-6">Find Healthcare Near You</h1>
       
       {/* Enhanced Search Section */}
       <div className="flex flex-col gap-4 mb-8">

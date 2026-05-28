@@ -855,10 +855,6 @@ export default function AttenderDashboard() {
                           </div>
 
                           {schedulesForDay.map(schedule => {
-                              console.log("Check -- ",isSameDay(new Date(schedule.appointments[0]?.date), selectedDate));
-                              // First filter appointments for the selected date
-                              console.log("Check -- ",schedule);
-                              console.log("Check -- ",selectedDate);
                               const appointmentsForDay = schedule.appointments
                                 .filter(apt => isSameDay(new Date(apt.date), selectedDate));
 
