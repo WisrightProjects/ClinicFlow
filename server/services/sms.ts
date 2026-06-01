@@ -35,7 +35,6 @@ class MyDreamsTechSMSProvider implements SMSProvider {
     });
 
     const url = `${this.endpoint}?${params.toString()}`;
-    console.log(`[MDT SMS] Calling: senderid=${this.senderId} apikey=${this.apiKey.slice(0, 4)}**** templateid=${templateId}`);
     const response = await fetch(url);
     const text = await response.text();
 
