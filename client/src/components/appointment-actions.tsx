@@ -8,24 +8,32 @@ type AppointmentActionsProps = {
   onMarkAsCompleted: () => void;
   onHold: () => void;
   onNoShow: () => void;
+  // A token cannot be started until the doctor is marked as arrived for its schedule.
+  doctorHasArrived?: boolean;
 };
 
-export function AppointmentActions({ 
+export function AppointmentActions({
   appointment,
   onMarkAsStarted,
   onMarkAsCompleted,
   onHold,
-  onNoShow
+  onNoShow,
+  doctorHasArrived = true
 }: AppointmentActionsProps) {
   const status = appointment.status;
-  
+  const startDisabledReason = doctorHasArrived
+    ? undefined
+    : "Mark the doctor as arrived before starting this token";
+
   return (
-    <div className="flex gap-2 flex-wrap">
+    <div className="flex gap-2 flex-wrap items-center">
       {(status === "scheduled" || status === "token_started") && (
         <>
           <Button
             size="sm"
             onClick={onMarkAsStarted}
+            disabled={!doctorHasArrived}
+            title={startDisabledReason}
           >
             Start
           </Button>
@@ -43,9 +51,12 @@ export function AppointmentActions({
           >
             No Show
           </Button>
+          {!doctorHasArrived && (
+            <span className="text-xs text-amber-600">Awaiting doctor arrival</span>
+          )}
         </>
       )}
-      
+
       {(status === "start" || status === "in_progress") && (
         <>
           <Button
@@ -56,12 +67,14 @@ export function AppointmentActions({
           </Button>
         </>
       )}
-      
+
       {status === "hold" && (
         <>
           <Button
             size="sm"
             onClick={onMarkAsStarted}
+            disabled={!doctorHasArrived}
+            title={startDisabledReason}
           >
             Start
           </Button>
@@ -72,8 +85,11 @@ export function AppointmentActions({
           >
             No Show
           </Button>
+          {!doctorHasArrived && (
+            <span className="text-xs text-amber-600">Awaiting doctor arrival</span>
+          )}
         </>
       )}
     </div>
   );
-} 
+}

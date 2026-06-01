@@ -1062,6 +1062,7 @@ export default function AttenderDashboard() {
                                               <div className="pt-2 border-t">
                                                 <AppointmentActions
                                                   appointment={appointment}
+                                                  doctorHasArrived={getPresenceData(doctorData.doctor.id, schedule.id).hasArrived}
                                                   onMarkAsStarted={() => handleMarkInProgress(appointment.id)}
                                                   onMarkAsCompleted={() => handleMarkAsCompleted(appointment.id)}
                                                   onHold={() => handleHoldAppointment(appointment.id)}
@@ -1183,6 +1184,7 @@ export default function AttenderDashboard() {
                                                   <td className="py-4 px-4">
                                                     <AppointmentActions
                                                       appointment={appointment}
+                                                      doctorHasArrived={getPresenceData(doctorData.doctor.id, schedule.id).hasArrived}
                                                       onMarkAsStarted={() => handleMarkInProgress(appointment.id)}
                                                       onMarkAsCompleted={() => handleMarkAsCompleted(appointment.id)}
                                                       onHold={() => handleHoldAppointment(appointment.id)}
