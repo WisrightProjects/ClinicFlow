@@ -359,14 +359,14 @@ export default function PatientBookingPage() {
                         <Button
                           key={schedule.id}
                           variant="outline"
-                          className="w-full flex justify-between items-center h-auto py-4 px-4"
+                          className="w-full flex justify-between items-center gap-3 h-auto py-4 px-4 whitespace-normal text-left"
                           onClick={() => !isUnavailable ? bookAppointment(schedule) : undefined}
                           disabled={isUnavailable}
                         >
-                          <div className="flex flex-col items-start">
-                            <div className="font-medium text-base">{schedule.clinic.name}</div>
+                          <div className="flex flex-col items-start min-w-0">
+                            <div className="font-medium text-base break-words">{schedule.clinic.name}</div>
                             <div className="flex items-center text-sm mt-1">
-                              <Clock className="mr-1 h-4 w-4" />
+                              <Clock className="mr-1 h-4 w-4 shrink-0" />
                               {schedule.startTime} - {schedule.endTime}
                             </div>
                             {schedule.maxTokens > 0 && !isScheduleCompleted && !isBookingClosed && (
@@ -378,12 +378,12 @@ export default function PatientBookingPage() {
                               </div>
                             )}
                             {statusMessage && (
-                              <div className="text-xs mt-1 text-gray-500">
+                              <div className="text-xs mt-1 text-gray-500 break-words">
                                 {statusMessage}
                               </div>
                             )}
                           </div>
-                          <Badge variant={isUnavailable ? badgeVariant : "default"}>
+                          <Badge variant={isUnavailable ? badgeVariant : "default"} className="shrink-0">
                             {isUnavailable ? statusBadge : "Book Now"}
                           </Badge>
                         </Button>
