@@ -788,18 +788,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`✅ Valid transition: ${currentStatus} → ${status}`);
 
-      // Block starting a consultation before the doctor has arrived at the clinic.
+      // Block consultation-flow actions before the doctor has arrived at the clinic.
+      // Start (in_progress), Hold and No Show are all premature until arrival.
       // Completion is implicitly gated too, since "completed" is only reachable from "in_progress".
-      if (status === "in_progress") {
+      const preArrivalBlockedStatuses = ["in_progress", "hold", "no_show"];
+      if (preArrivalBlockedStatuses.includes(status)) {
         const arrivalStatus = await storage.getDoctorArrivalStatus(
           currentAppointment.doctorId,
           currentAppointment.clinicId,
           new Date()
         );
         if (!arrivalStatus?.hasArrived) {
-          console.log(`⛔ Blocked start for appointment ${appointmentId}: doctor not arrived`);
+          console.log(`⛔ Blocked '${status}' for appointment ${appointmentId}: doctor not arrived`);
           return res.status(400).json({
-            message: "Cannot start a token before the doctor has been marked as arrived at the clinic.",
+            message: "Cannot perform this action before the doctor has been marked as arrived at the clinic.",
           });
         }
       }

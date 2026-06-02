@@ -21,9 +21,11 @@ export function AppointmentActions({
   doctorHasArrived = true
 }: AppointmentActionsProps) {
   const status = appointment.status;
-  const startDisabledReason = doctorHasArrived
+  // Start, Hold and No Show are all consultation-flow actions that are premature
+  // until the doctor is marked as arrived for this schedule.
+  const preArrivalDisabledReason = doctorHasArrived
     ? undefined
-    : "Mark the doctor as arrived before starting this token";
+    : "Mark the doctor as arrived before performing this action";
 
   return (
     <div className="flex gap-2 flex-wrap items-center">
@@ -33,7 +35,7 @@ export function AppointmentActions({
             size="sm"
             onClick={onMarkAsStarted}
             disabled={!doctorHasArrived}
-            title={startDisabledReason}
+            title={preArrivalDisabledReason}
           >
             Start
           </Button>
@@ -41,6 +43,8 @@ export function AppointmentActions({
             size="sm"
             variant="outline"
             onClick={onHold}
+            disabled={!doctorHasArrived}
+            title={preArrivalDisabledReason}
           >
             Hold
           </Button>
@@ -48,6 +52,8 @@ export function AppointmentActions({
             size="sm"
             variant="destructive"
             onClick={onNoShow}
+            disabled={!doctorHasArrived}
+            title={preArrivalDisabledReason}
           >
             No Show
           </Button>
@@ -74,7 +80,7 @@ export function AppointmentActions({
             size="sm"
             onClick={onMarkAsStarted}
             disabled={!doctorHasArrived}
-            title={startDisabledReason}
+            title={preArrivalDisabledReason}
           >
             Start
           </Button>
@@ -82,6 +88,8 @@ export function AppointmentActions({
             size="sm"
             variant="destructive"
             onClick={onNoShow}
+            disabled={!doctorHasArrived}
+            title={preArrivalDisabledReason}
           >
             No Show
           </Button>
