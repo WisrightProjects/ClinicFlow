@@ -18,7 +18,12 @@ export default function HomePage() {
   const { user, isLoading: isAuthLoading } = useAuth();
 
   const { data: doctors, isLoading } = useQuery<User[]>({
-    queryKey: [specialty ? `/api/doctors/${specialty}` : "/api/doctors"],
+    // Specialty is a query param on /api/doctors — "all" (or empty) means no filter
+    queryKey: [
+      specialty && specialty !== "all"
+        ? `/api/doctors?specialty=${encodeURIComponent(specialty)}`
+        : "/api/doctors",
+    ],
   });
 
   const filteredDoctors = doctors?.filter(doctor =>

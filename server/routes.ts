@@ -80,6 +80,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Distinct specialties of existing doctors (for the search filter dropdown)
+  app.get("/api/specialties", async (_req, res) => {
+    try {
+      const specialties = await storage.getDoctorSpecialties();
+      res.json(specialties);
+    } catch (error) {
+      console.error('Error fetching specialties:', error);
+      res.status(500).json({ message: 'Failed to fetch specialties' });
+    }
+  });
+
   // Get nearby clinics within specified radius (0-10km)
   app.get("/api/clinics/nearby", async (req, res) => {
     const { lat, lng, radius } = req.query;
@@ -301,7 +312,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/doctors/:id", async (req, res) => {
     try {
-      const doctor = await storage.getDoctorWithClinic(parseInt(req.params.id));
+      const doctorId = parseInt(req.params.id);
+      if (isNaN(doctorId)) {
+        return res.status(400).json({ message: 'Invalid doctor id' });
+      }
+      const doctor = await storage.getDoctorWithClinic(doctorId);
       if (!doctor || doctor.role !== 'doctor') {
         return res.status(404).json({ message: 'Doctor not found' });
       }

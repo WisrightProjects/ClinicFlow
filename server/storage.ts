@@ -121,6 +121,7 @@ export interface IStorage {
   updateLastOtpSentAt(phone: string): Promise<void>;
   getDoctors(): Promise<User[]>;
   getDoctorsBySpecialty(specialty: string): Promise<User[]>;
+  getDoctorSpecialties(): Promise<string[]>;
   getDoctorWithClinic(id: number): Promise<(User & { clinic?: Clinic }) | undefined>;
   getDoctorsNearLocation(lat: number, lng: number, radiusInMiles?: number): Promise<User[]>;
   getClinicsNearLocation(lat: number, lng: number, radiusInKm?: number): Promise<(Clinic & { distance: number })[]>;
@@ -513,6 +514,18 @@ export class DatabaseStorage implements IStorage {
 
   async getDoctorsBySpecialty(specialty: string): Promise<User[]> {
     return await db.select().from(users).where(eq(users.specialty, specialty));
+  }
+
+  // Distinct specialties of existing doctors — drives the search filter dropdown
+  async getDoctorSpecialties(): Promise<string[]> {
+    const rows = await db
+      .selectDistinct({ specialty: users.specialty })
+      .from(users)
+      .where(eq(users.role, "doctor"));
+    return rows
+      .map((r) => r.specialty)
+      .filter((s): s is string => !!s)
+      .sort();
   }
 
   async getClinicAdmins(): Promise<(User & { clinic?: Clinic })[]> {

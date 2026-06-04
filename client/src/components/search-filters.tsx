@@ -1,4 +1,6 @@
+// Doctor search bar + specialty filter driven by the specialties that actually exist in the DB
 import { Search } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -7,7 +9,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { specialties } from "@shared/schema";
 
 interface SearchFiltersProps {
   searchTerm: string;
@@ -22,6 +23,11 @@ export function SearchFilters({
   specialty,
   onSpecialtyChange,
 }: SearchFiltersProps) {
+  // Distinct specialties of existing doctors — keeps filter options in sync with real data
+  const { data: specialties = [] } = useQuery<string[]>({
+    queryKey: ["/api/specialties"],
+  });
+
   return (
     <div className="bg-white shadow-sm border-b">
       <div className="container mx-auto px-4 py-4">
