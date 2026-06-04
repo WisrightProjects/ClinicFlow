@@ -177,11 +177,11 @@ export function NavHeader() {
             </>
           ) : (
             <div className="flex items-center gap-2">
-              <Button variant="ghost" asChild>
-                <Link href="/auth">Login</Link>
+              <Button variant="outline" className="border-primary text-primary hover:bg-primary/10" asChild>
+                <Link href="/patient-register">Patient Register</Link>
               </Button>
               <Button asChild>
-                <Link href="/auth">Register</Link>
+                <Link href="/auth">Login</Link>
               </Button>
             </div>
           )}
