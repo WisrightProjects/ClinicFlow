@@ -14,6 +14,15 @@ declare global {
   }
 }
 
+declare module "express-session" {
+  interface SessionData {
+    registrationPhone?: string;        // OTP-verified phone for pending registration
+    registrationVerifiedAt?: number;   // epoch ms, valid for 15 minutes
+    resetMpinPhone?: string;           // OTP-verified phone for pending MPIN reset
+    resetMpinVerifiedAt?: number;      // epoch ms, valid for 15 minutes
+  }
+}
+
 const scryptAsync = promisify(scrypt);
 
 async function hashPassword(password: string) {
@@ -348,7 +357,10 @@ export function setupAuth(app: Express) {
       // Check if user already exists
       const existingUser = await storage.getUserByPhone(phone);
       if (existingUser) {
-        return res.status(400).json({ message: "An account already exists with this phone number" });
+        return res.status(400).json({
+          message: "This mobile number is already registered. Please login using your MPIN.",
+          code: "ALREADY_REGISTERED",
+        });
       }
 
       // Check rate limiting
@@ -380,6 +392,43 @@ export function setupAuth(app: Express) {
     } catch (error) {
       console.error("Error sending registration OTP:", error);
       res.status(500).json({ message: "Failed to send OTP" });
+    }
+  });
+
+  // Verify registration OTP only — binds the verified phone to the session (AUTH-002)
+  app.post("/api/register/verify-phone", async (req, res) => {
+    try {
+      let { phone, otp } = req.body;
+      if (!phone || !otp) {
+        return res.status(400).json({ message: "Phone number and OTP are required" });
+      }
+      phone = phone.replace(/\D/g, "");
+      if (phone.length > 10) phone = phone.slice(-10);
+
+      const otpRecord = await storage.getValidOtp(phone, otp);
+      if (!otpRecord) {
+        return res.status(401).json({ message: "Invalid or expired OTP" });
+      }
+      if ((otpRecord.verificationAttempts ?? 0) >= 5) {
+        return res.status(429).json({ message: "Too many attempts. Please request a new OTP" });
+      }
+      await storage.incrementOtpAttempts(otpRecord.id);
+      await storage.markOtpAsVerified(otpRecord.id);
+
+      req.session.registrationPhone = phone;
+      req.session.registrationVerifiedAt = Date.now();
+
+      // Persist the session before responding so the register step can rely on it
+      req.session.save((err) => {
+        if (err) {
+          console.error("Failed to persist registration session:", err);
+          return res.status(500).json({ message: "Failed to verify OTP" });
+        }
+        res.json({ verified: true, phone });
+      });
+    } catch (error) {
+      console.error("Registration phone verification error:", error);
+      res.status(500).json({ message: "Failed to verify OTP" });
     }
   });
 
@@ -689,16 +738,11 @@ export function setupAuth(app: Express) {
   // Patient Self-Registration with MPIN
   app.post("/api/auth/patient/register", async (req, res) => {
     try {
-      const { name, username, mobileNumber, mpin } = req.body;
+      const { name, mobileNumber, mpin } = req.body;
 
       // Validate input
-      if (!name || !username || !mobileNumber || !mpin) {
-        return res.status(400).json({ message: "Name, username, mobile number, and MPIN are required" });
-      }
-
-      // Validate username format
-      if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
-        return res.status(400).json({ message: "Username must be 3-20 characters and contain only letters, numbers, and underscores" });
+      if (!name || !mobileNumber || !mpin) {
+        return res.status(400).json({ message: "Name, mobile number, and MPIN are required" });
       }
 
       // Validate mobile number format
@@ -711,18 +755,31 @@ export function setupAuth(app: Express) {
         return res.status(400).json({ message: "MPIN must be exactly 4 digits" });
       }
 
-      // Check if username already exists
-      const existingUsername = await storage.getUserByUsername(username);
-      if (existingUsername) {
-        return res.status(400).json({ message: "Username already taken. Please choose another one." });
+      // AUTH-002: phone must have been OTP-verified in this session within 15 minutes
+      const verifiedPhone = req.session.registrationPhone;
+      const verifiedAt = req.session.registrationVerifiedAt ?? 0;
+      const VERIFICATION_WINDOW_MS = 15 * 60 * 1000;
+      if (verifiedPhone !== mobileNumber || Date.now() - verifiedAt > VERIFICATION_WINDOW_MS) {
+        return res.status(403).json({
+          message: "Mobile number not verified. Please complete OTP verification first.",
+        });
       }
 
       // Check if mobile number already exists
       const existingUser = await storage.getUserByPhone(mobileNumber);
       if (existingUser) {
-        return res.status(400).json({ message: "Mobile number already registered" });
+        return res.status(400).json({
+          message: "This mobile number is already registered. Please login using your MPIN.",
+          code: "ALREADY_REGISTERED",
+        });
       }
-      
+
+      // Auto-generate a username (collision-safe) — patients never see it
+      let username = `patient${mobileNumber.slice(-6)}`;
+      if (await storage.getUserByUsername(username)) {
+        username = `patient${mobileNumber.slice(-6)}${randomBytes(2).toString("hex")}`;
+      }
+
       // Hash MPIN (using same function as password)
       const hashedMpin = await hashMpin(mpin);
       
@@ -746,9 +803,13 @@ export function setupAuth(app: Express) {
       // Set MPIN for the user
       await storage.updateMpin(user.id, hashedMpin);
 
-      res.status(201).json({ 
+      // AUTH-002: clear the verification so it cannot be reused
+      delete req.session.registrationPhone;
+      delete req.session.registrationVerifiedAt;
+
+      res.status(201).json({
         message: "Registration successful! You can now login with your mobile number and MPIN.",
-        userId: user.id 
+        userId: user.id
       });
     } catch (error) {
       console.error("Patient registration error:", error);
@@ -877,6 +938,137 @@ export function setupAuth(app: Express) {
     } catch (error) {
       console.error("Change MPIN error:", error);
       res.status(500).json({ message: "Failed to change MPIN" });
+    }
+  });
+
+  // ========== SELF-SERVICE FORGOT MPIN (OTP-verified) ==========
+
+  // Step 1: send an OTP to a registered patient's mobile
+  app.post("/api/auth/patient/forgot-mpin/request-otp", async (req, res) => {
+    try {
+      let { phone } = req.body;
+      if (!phone) {
+        return res.status(400).json({ message: "Phone number is required" });
+      }
+      phone = phone.replace(/\D/g, "");
+      if (phone.length > 10) phone = phone.slice(-10);
+
+      // Unlike registration, the number MUST belong to an existing patient
+      const user = await storage.getUserByPhoneForMpin(phone);
+      if (!user) {
+        return res.status(404).json({
+          message: "This mobile number is not registered. Please register first.",
+          code: "NOT_REGISTERED",
+        });
+      }
+
+      const canSend = await storage.canSendOtp(phone);
+      if (!canSend) {
+        return res.status(429).json({ message: process.env.NODE_ENV === 'production' ? "Please wait 1 minute before requesting another OTP" : "Please wait 10 seconds before requesting another OTP" });
+      }
+
+      await storage.cleanupExpiredOtps();
+
+      const otp = smsService.generateOTP();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+      await storage.createOtpVerification({
+        phone,
+        otpCode: otp,
+        expiresAt,
+        verified: false,
+        verificationAttempts: 0
+      });
+      await storage.updateLastOtpSentAt(phone);
+      await smsService.sendOTP(phone, otp);
+
+      res.json({ message: "OTP sent successfully" });
+    } catch (error) {
+      console.error("Forgot MPIN OTP request error:", error);
+      res.status(500).json({ message: "Failed to send OTP" });
+    }
+  });
+
+  // Step 2: verify the OTP and bind the phone to the session for the reset step
+  app.post("/api/auth/patient/forgot-mpin/verify-otp", async (req, res) => {
+    try {
+      let { phone, otp } = req.body;
+      if (!phone || !otp) {
+        return res.status(400).json({ message: "Phone number and OTP are required" });
+      }
+      phone = phone.replace(/\D/g, "");
+      if (phone.length > 10) phone = phone.slice(-10);
+
+      const otpRecord = await storage.getValidOtp(phone, otp);
+      if (!otpRecord) {
+        return res.status(401).json({ message: "Invalid or expired OTP" });
+      }
+      if ((otpRecord.verificationAttempts ?? 0) >= 5) {
+        return res.status(429).json({ message: "Too many attempts. Please request a new OTP" });
+      }
+      await storage.incrementOtpAttempts(otpRecord.id);
+      await storage.markOtpAsVerified(otpRecord.id);
+
+      req.session.resetMpinPhone = phone;
+      req.session.resetMpinVerifiedAt = Date.now();
+
+      // Persist the session before responding so the reset step can rely on it
+      req.session.save((err) => {
+        if (err) {
+          console.error("Failed to persist MPIN reset session:", err);
+          return res.status(500).json({ message: "Failed to verify OTP" });
+        }
+        res.json({ verified: true, phone });
+      });
+    } catch (error) {
+      console.error("Forgot MPIN OTP verification error:", error);
+      res.status(500).json({ message: "Failed to verify OTP" });
+    }
+  });
+
+  // Step 3: set the new MPIN — only for the session-verified phone, within 15 minutes
+  app.post("/api/auth/patient/forgot-mpin/reset", async (req, res) => {
+    try {
+      const { mobileNumber, newMpin } = req.body;
+      if (!mobileNumber || !newMpin) {
+        return res.status(400).json({ message: "Mobile number and new MPIN are required" });
+      }
+      if (!/^\d{10}$/.test(mobileNumber)) {
+        return res.status(400).json({ message: "Mobile number must be 10 digits" });
+      }
+      if (!/^\d{4}$/.test(newMpin)) {
+        return res.status(400).json({ message: "MPIN must be exactly 4 digits" });
+      }
+
+      // Phone must have been OTP-verified in this session within 15 minutes
+      const verifiedPhone = req.session.resetMpinPhone;
+      const verifiedAt = req.session.resetMpinVerifiedAt ?? 0;
+      const VERIFICATION_WINDOW_MS = 15 * 60 * 1000;
+      if (verifiedPhone !== mobileNumber || Date.now() - verifiedAt > VERIFICATION_WINDOW_MS) {
+        return res.status(403).json({
+          message: "Mobile number not verified. Please complete OTP verification first.",
+        });
+      }
+
+      const user = await storage.getUserByPhoneForMpin(mobileNumber);
+      if (!user) {
+        return res.status(404).json({
+          message: "This mobile number is not registered. Please register first.",
+          code: "NOT_REGISTERED",
+        });
+      }
+
+      // updateMpin also resets attempt counters and clears any lockout
+      const hashedMpin = await hashMpin(newMpin);
+      await storage.updateMpin(user.id, hashedMpin);
+
+      // One reset per verification
+      delete req.session.resetMpinPhone;
+      delete req.session.resetMpinVerifiedAt;
+
+      res.json({ message: "MPIN reset successfully. You can now login with your new MPIN." });
+    } catch (error) {
+      console.error("Forgot MPIN reset error:", error);
+      res.status(500).json({ message: "Failed to reset MPIN" });
     }
   });
 }
