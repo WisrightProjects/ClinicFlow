@@ -31,6 +31,7 @@ import { ForcePasswordReset } from "@/components/ForcePasswordReset";
 import PortalSelection from "@/pages/auth/portal-selection";
 import PatientLogin from "@/pages/auth/patient-login";
 import PatientRegister from "@/pages/auth/patient-register";
+import PatientForgotMpin from "@/pages/auth/patient-forgot-mpin";
 import StaffLogin from "@/pages/auth/staff-login";
 import AdminLogin from "@/pages/auth/admin-login";
 // Policy and help pages
@@ -99,6 +100,7 @@ function Router() {
       <Route path="/" component={getLandingPage} />
       <Route path="/patient-login" component={PatientLogin} />
       <Route path="/patient-register" component={PatientRegister} />
+      <Route path="/patient-forgot-mpin" component={PatientForgotMpin} />
       <Route path="/staff-login" component={StaffLogin} />
       <Route path="/admin-login" component={AdminLogin} />
       

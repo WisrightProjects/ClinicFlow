@@ -1,4 +1,4 @@
-// Patient self-registration wizard: Mobile -> OTP -> Name -> MPIN -> Confirm MPIN (AUTH-002)
+// Self-service Forgot MPIN wizard: Mobile -> OTP -> New MPIN -> Confirm MPIN
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { useForm } from "react-hook-form";
@@ -9,33 +9,32 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage, FormDescription } from "@/components/ui/form";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { ArrowLeft, Phone, Lock, User, AlertCircle, ChevronRight, ChevronLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Phone, Lock, AlertCircle, ChevronRight, ChevronLeft, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Progress } from "@/components/ui/progress";
 import { MpinKeypad } from "@/components/mpin-keypad";
 import { OtpInput } from "@/components/otp-input";
 
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 4;
 
-const patientRegisterSchema = z
+const forgotMpinSchema = z
   .object({
     mobileNumber: z
       .string()
       .length(10, "Mobile number must be 10 digits")
       .regex(/^\d{10}$/, "Mobile number must contain only digits"),
     otp: z.string().length(6, "OTP must be 6 digits").regex(/^\d{6}$/, "OTP must contain only digits"),
-    name: z.string().min(2, "Name is required"),
-    mpin: z.string().length(4, "MPIN must be 4 digits").regex(/^\d{4}$/, "MPIN must contain only digits"),
+    newMpin: z.string().length(4, "MPIN must be 4 digits").regex(/^\d{4}$/, "MPIN must contain only digits"),
     confirmMpin: z.string().length(4, "MPIN must be 4 digits").regex(/^\d{4}$/, "MPIN must contain only digits"),
   })
-  .refine((data) => data.mpin === data.confirmMpin, {
+  .refine((data) => data.newMpin === data.confirmMpin, {
     message: "MPINs don't match",
     path: ["confirmMpin"],
   });
 
-type PatientRegisterData = z.infer<typeof patientRegisterSchema>;
+type ForgotMpinData = z.infer<typeof forgotMpinSchema>;
 
-// Parse a fetch Response into { ok, status, body } without throwing (apiRequest throws on non-2xx)
+// Parse a fetch Response into { ok, status, body } without throwing
 async function callApi(url: string, payload: unknown) {
   const res = await fetch(url, {
     method: "POST",
@@ -52,33 +51,22 @@ async function callApi(url: string, payload: unknown) {
   return { ok: res.ok, status: res.status, body };
 }
 
-export default function PatientRegister() {
+export default function PatientForgotMpin() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [showMpin, setShowMpin] = useState(false);
-
-  // Step 1/4: already-registered block shown inline with a "Go to Login" action
-  const [alreadyRegistered, setAlreadyRegistered] = useState(false);
-
-  // Step 2: OTP digit boxes + resend countdown
+  const [notRegistered, setNotRegistered] = useState(false);
   const [otpDigits, setOtpDigits] = useState(["", "", "", "", "", ""]);
   const [countdown, setCountdown] = useState(0);
   const [otpError, setOtpError] = useState("");
 
-  const form = useForm<PatientRegisterData>({
-    resolver: zodResolver(patientRegisterSchema),
-    defaultValues: {
-      mobileNumber: "",
-      otp: "",
-      name: "",
-      mpin: "",
-      confirmMpin: "",
-    },
+  const form = useForm<ForgotMpinData>({
+    resolver: zodResolver(forgotMpinSchema),
+    defaultValues: { mobileNumber: "", otp: "", newMpin: "", confirmMpin: "" },
   });
 
-  // Resend countdown timer (mirrors MobileLoginForm)
   useEffect(() => {
     if (countdown > 0) {
       const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
@@ -92,28 +80,23 @@ export default function PatientRegister() {
     setOtpError("");
   };
 
-  // --- Step 1: request OTP for the entered mobile ---
+  // --- Step 1: request OTP for the registered mobile ---
   const handleRequestOtp = async () => {
-    const valid = await form.trigger("mobileNumber");
-    if (!valid) return;
+    if (!(await form.trigger("mobileNumber"))) return;
 
     setIsLoading(true);
-    setAlreadyRegistered(false);
+    setNotRegistered(false);
     try {
-      const { ok, status, body } = await callApi("/api/register/request-otp", {
+      const { ok, status, body } = await callApi("/api/auth/patient/forgot-mpin/request-otp", {
         phone: form.getValues("mobileNumber"),
       });
 
       if (!ok) {
-        if (status === 400 && (body.code === "ALREADY_REGISTERED" || /already registered/i.test(body.message || ""))) {
-          setAlreadyRegistered(true);
+        if (status === 404 && (body.code === "NOT_REGISTERED" || /not registered/i.test(body.message || ""))) {
+          setNotRegistered(true);
           return;
         }
-        toast({
-          title: "Could not send OTP",
-          description: body.message || "Please try again",
-          variant: "destructive",
-        });
+        toast({ title: "Could not send OTP", description: body.message || "Please try again", variant: "destructive" });
         return;
       }
 
@@ -132,11 +115,10 @@ export default function PatientRegister() {
   const handleResendOtp = async () => {
     setIsLoading(true);
     try {
-      const { ok, status, body } = await callApi("/api/register/request-otp", {
+      const { ok, status, body } = await callApi("/api/auth/patient/forgot-mpin/request-otp", {
         phone: form.getValues("mobileNumber"),
       });
       if (!ok) {
-        // Server-side cooldown hit — re-arm the client countdown so the button backs off too
         if (status === 429) setCountdown(60);
         toast({ title: "Could not resend OTP", description: body.message || "Please try again", variant: "destructive" });
         return;
@@ -153,8 +135,7 @@ export default function PatientRegister() {
 
   // --- Step 2: verify OTP, binding the phone to the session ---
   const handleVerifyOtp = async () => {
-    const valid = await form.trigger("otp");
-    if (!valid) {
+    if (!(await form.trigger("otp"))) {
       setOtpError("OTP must be 6 digits");
       return;
     }
@@ -162,7 +143,7 @@ export default function PatientRegister() {
     setIsLoading(true);
     setOtpError("");
     try {
-      const { ok, status, body } = await callApi("/api/register/verify-phone", {
+      const { ok, status, body } = await callApi("/api/auth/patient/forgot-mpin/verify-otp", {
         phone: form.getValues("mobileNumber"),
         otp: form.getValues("otp"),
       });
@@ -187,17 +168,15 @@ export default function PatientRegister() {
     }
   };
 
-  // --- Step 5: create the account ---
-  const handleFinalSubmit = async () => {
-    const valid = await form.trigger("confirmMpin");
-    if (!valid) return;
+  // --- Step 4: reset the MPIN ---
+  const handleReset = async () => {
+    if (!(await form.trigger("confirmMpin"))) return;
 
     setIsLoading(true);
     try {
-      const { ok, status, body } = await callApi("/api/auth/patient/register", {
-        name: form.getValues("name"),
+      const { ok, status, body } = await callApi("/api/auth/patient/forgot-mpin/reset", {
         mobileNumber: form.getValues("mobileNumber"),
-        mpin: form.getValues("mpin"),
+        newMpin: form.getValues("newMpin"),
       });
 
       if (!ok) {
@@ -207,25 +186,20 @@ export default function PatientRegister() {
             description: "Verification expired — please verify your number again",
             variant: "destructive",
           });
-          // Reset wizard back to mobile entry (AUTH-002 Part 5)
           setOtpValue(["", "", "", "", "", ""]);
-          form.setValue("mpin", "");
+          form.setValue("newMpin", "");
           form.setValue("confirmMpin", "");
           setCountdown(0);
           setCurrentStep(1);
           return;
         }
-        toast({
-          title: "Registration Failed",
-          description: body.message || "Failed to create account",
-          variant: "destructive",
-        });
+        toast({ title: "Reset Failed", description: body.message || "Failed to reset MPIN", variant: "destructive" });
         return;
       }
 
       toast({
-        title: "Registration Successful!",
-        description: "Your account has been created. Redirecting to login...",
+        title: "MPIN Reset Successful!",
+        description: "You can now login with your new MPIN. Redirecting to login...",
       });
       setTimeout(() => navigate("/patient-login"), 2000);
     } catch {
@@ -235,39 +209,21 @@ export default function PatientRegister() {
     }
   };
 
-  // MPIN keypad handlers (kept from the original 3-step wizard)
-  const handleMpinInput = (field: "mpin" | "confirmMpin", digit: string) => {
+  // MPIN keypad handlers
+  const handleMpinInput = (field: "newMpin" | "confirmMpin", digit: string) => {
     const currentValue = form.getValues(field);
     if (currentValue.length < 4) form.setValue(field, currentValue + digit);
   };
-  const handleMpinClear = (field: "mpin" | "confirmMpin") => form.setValue(field, "");
-  const handleMpinBackspace = (field: "mpin" | "confirmMpin") =>
+  const handleMpinClear = (field: "newMpin" | "confirmMpin") => form.setValue(field, "");
+  const handleMpinBackspace = (field: "newMpin" | "confirmMpin") =>
     form.setValue(field, form.getValues(field).slice(0, -1));
 
-  // Step 4 -> 5 (validate the new MPIN before confirming)
-  const goToConfirmMpin = async () => {
-    const valid = await form.trigger("mpin");
-    if (valid) setCurrentStep(5);
-  };
-
   const stepTitles: Record<number, { title: string; description: string }> = {
-    1: { title: "Mobile Number", description: "Enter your 10-digit mobile number to get started" },
+    1: { title: "Forgot MPIN", description: "Enter your registered mobile number to receive an OTP" },
     2: { title: "Verify OTP", description: "Enter the 6-digit code sent to your mobile" },
-    3: { title: "Your Name", description: "Tell us your full name" },
-    4: { title: "Create MPIN", description: "Choose a 4-digit PIN you'll remember" },
-    5: { title: "Confirm MPIN", description: "Re-enter your MPIN to confirm" },
+    3: { title: "New MPIN", description: "Choose a new 4-digit PIN you'll remember" },
+    4: { title: "Confirm MPIN", description: "Re-enter your new MPIN to confirm" },
   };
-
-  const lockedMobile = (
-    <FormItem>
-      <FormLabel>Mobile Number</FormLabel>
-      <div className="relative">
-        <Phone className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-500" />
-        <Input value={form.getValues("mobileNumber")} readOnly disabled className="pl-10 bg-muted" />
-      </div>
-      <FormDescription>Verified — this will be your login ID</FormDescription>
-    </FormItem>
-  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
@@ -280,15 +236,12 @@ export default function PatientRegister() {
             </Button>
           </Link>
 
-          {/* Progress indicator */}
           <Progress value={(currentStep / TOTAL_STEPS) * 100} className="mb-4" />
 
           <div className="flex items-center justify-center mb-4">
             <div className="w-16 h-16 bg-blue-500 rounded-full flex items-center justify-center">
               {currentStep === 1 && <Phone className="w-8 h-8 text-white" />}
-              {currentStep === 2 && <Lock className="w-8 h-8 text-white" />}
-              {currentStep === 3 && <User className="w-8 h-8 text-white" />}
-              {(currentStep === 4 || currentStep === 5) && <Lock className="w-8 h-8 text-white" />}
+              {currentStep >= 2 && <Lock className="w-8 h-8 text-white" />}
             </div>
           </div>
           <CardTitle className="text-2xl text-center">{stepTitles[currentStep].title}</CardTitle>
@@ -319,29 +272,23 @@ export default function PatientRegister() {
                               autoFocus
                               onChange={(e) => {
                                 field.onChange(e.target.value.replace(/\D/g, "").slice(0, 10));
-                                setAlreadyRegistered(false);
+                                setNotRegistered(false);
                               }}
                             />
                           </div>
                         </FormControl>
-                        <FormDescription>This will be your login ID</FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
 
-                  {alreadyRegistered && (
+                  {notRegistered && (
                     <Alert variant="destructive">
                       <AlertCircle className="h-4 w-4" />
                       <AlertDescription className="space-y-2">
-                        <p>This mobile number is already registered. Please login using your MPIN.</p>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => navigate("/patient-login")}
-                        >
-                          Go to Login
+                        <p>This mobile number is not registered. Please register first.</p>
+                        <Button type="button" size="sm" variant="outline" onClick={() => navigate("/patient-register")}>
+                          Go to Register
                         </Button>
                       </AlertDescription>
                     </Alert>
@@ -360,15 +307,6 @@ export default function PatientRegister() {
                       </>
                     )}
                   </Button>
-
-                  <div className="text-center text-sm mt-4">
-                    <span className="text-gray-600">Already have an account? </span>
-                    <Link href="/patient-login">
-                      <Button variant="link" className="p-0 h-auto font-semibold">
-                        Login here
-                      </Button>
-                    </Link>
-                  </div>
                 </>
               )}
 
@@ -431,28 +369,35 @@ export default function PatientRegister() {
                 </>
               )}
 
-              {/* Step 3: Full name (mobile locked) */}
+              {/* Step 3: New MPIN */}
               {currentStep === 3 && (
                 <>
-                  {lockedMobile}
+                  <FormItem>
+                    <FormLabel>Mobile Number</FormLabel>
+                    <div className="relative">
+                      <Phone className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-500" />
+                      <Input value={form.getValues("mobileNumber")} readOnly disabled className="pl-10 bg-muted" />
+                    </div>
+                    <FormDescription>Verified</FormDescription>
+                  </FormItem>
 
                   <FormField
                     control={form.control}
-                    name="name"
+                    name="newMpin"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Full Name</FormLabel>
+                        <FormLabel>New 4-Digit MPIN</FormLabel>
                         <FormControl>
-                          <div className="relative">
-                            <User className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-500" />
-                            <Input
-                              {...field}
-                              type="text"
-                              placeholder="Enter your full name"
-                              className="pl-10"
-                              autoFocus
-                            />
-                          </div>
+                          <MpinKeypad
+                            value={field.value}
+                            placeholder="Enter 4 digits"
+                            showToggle
+                            reveal={showMpin}
+                            onToggleReveal={() => setShowMpin(!showMpin)}
+                            onDigit={(d) => handleMpinInput("newMpin", d)}
+                            onClear={() => handleMpinClear("newMpin")}
+                            onBackspace={() => handleMpinBackspace("newMpin")}
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -463,8 +408,9 @@ export default function PatientRegister() {
                     type="button"
                     className="w-full"
                     onClick={async () => {
-                      if (await form.trigger("name")) setCurrentStep(4);
+                      if (await form.trigger("newMpin")) setCurrentStep(4);
                     }}
+                    disabled={form.watch("newMpin").length !== 4}
                   >
                     Next
                     <ChevronRight className="w-4 h-4 ml-2" />
@@ -472,61 +418,15 @@ export default function PatientRegister() {
                 </>
               )}
 
-              {/* Step 4: Create MPIN */}
+              {/* Step 4: Confirm new MPIN */}
               {currentStep === 4 && (
-                <>
-                  {lockedMobile}
-
-                  <FormField
-                    control={form.control}
-                    name="mpin"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Create Your 4-Digit MPIN</FormLabel>
-                        <FormControl>
-                          <MpinKeypad
-                            value={field.value}
-                            placeholder="Enter 4 digits"
-                            showToggle
-                            reveal={showMpin}
-                            onToggleReveal={() => setShowMpin(!showMpin)}
-                            onDigit={(d) => handleMpinInput("mpin", d)}
-                            onClear={() => handleMpinClear("mpin")}
-                            onBackspace={() => handleMpinBackspace("mpin")}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <div className="flex gap-2">
-                    <Button type="button" variant="outline" className="flex-1" onClick={() => setCurrentStep(3)}>
-                      <ChevronLeft className="w-4 h-4 mr-2" />
-                      Back
-                    </Button>
-                    <Button
-                      type="button"
-                      className="flex-1"
-                      onClick={goToConfirmMpin}
-                      disabled={form.watch("mpin").length !== 4}
-                    >
-                      Next
-                      <ChevronRight className="w-4 h-4 ml-2" />
-                    </Button>
-                  </div>
-                </>
-              )}
-
-              {/* Step 5: Confirm MPIN */}
-              {currentStep === 5 && (
                 <>
                   <FormField
                     control={form.control}
                     name="confirmMpin"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Confirm Your MPIN</FormLabel>
+                        <FormLabel>Confirm Your New MPIN</FormLabel>
                         <FormControl>
                           <MpinKeypad
                             value={field.value}
@@ -543,23 +443,21 @@ export default function PatientRegister() {
 
                   <Alert>
                     <AlertCircle className="h-4 w-4" />
-                    <AlertDescription>
-                      Remember your MPIN! You'll need it to login to your account.
-                    </AlertDescription>
+                    <AlertDescription>Remember your new MPIN! You'll need it to login.</AlertDescription>
                   </Alert>
 
                   <div className="flex gap-2">
-                    <Button type="button" variant="outline" className="flex-1" onClick={() => setCurrentStep(4)}>
+                    <Button type="button" variant="outline" className="flex-1" onClick={() => setCurrentStep(3)}>
                       <ChevronLeft className="w-4 h-4 mr-2" />
                       Back
                     </Button>
                     <Button
                       type="button"
                       className="flex-1"
-                      onClick={handleFinalSubmit}
+                      onClick={handleReset}
                       disabled={isLoading || form.watch("confirmMpin").length !== 4}
                     >
-                      {isLoading ? "Creating..." : "Create Account"}
+                      {isLoading ? "Resetting..." : "Reset MPIN"}
                     </Button>
                   </div>
                 </>

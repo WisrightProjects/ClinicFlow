@@ -46,11 +46,11 @@ export default function LandingPage() {
 
 
             {/* Quick auth entry points */}
-            <div className="mt-4 flex flex-wrap gap-2 text-sm">
-              <Button asChild variant="ghost" className="px-3">
+            <div className="mt-4 flex flex-wrap gap-3">
+              <Button asChild size="lg" className="rounded-full">
                 <Link href="/patient-login">Patient Login</Link>
               </Button>
-              <Button asChild variant="link" className="px-3">
+              <Button asChild size="lg" variant="outline" className="rounded-full border-primary text-primary hover:bg-primary/10">
                 <Link href="/patient-register">Create Patient Account</Link>
               </Button>
             </div>

@@ -7,8 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { ArrowLeft, Phone, Lock, AlertCircle } from "lucide-react";
+import { ArrowLeft, Phone, Lock } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
@@ -235,12 +234,13 @@ export default function PatientLogin() {
                 )}
               />
 
-              <Alert>
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
-                  If you've forgotten your MPIN, please contact your clinic administrator for assistance.
-                </AlertDescription>
-              </Alert>
+              <div className="text-right">
+                <Link href="/patient-forgot-mpin">
+                  <Button variant="link" className="p-0 h-auto text-sm">
+                    Forgot MPIN?
+                  </Button>
+                </Link>
+              </div>
 
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? "Logging in..." : "Login"}

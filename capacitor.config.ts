@@ -6,6 +6,9 @@ const config: CapacitorConfig = {
   webDir: 'dist/public',
   server: {
     androidScheme: 'https',
+    // Load the live production site so relative /api calls hit the real backend
+    url: 'https://clinik.co.in',
+    cleartext: false,
   },
   plugins: {
     Geolocation: {
