@@ -10,7 +10,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Phone, Lock, ArrowLeft } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
 import { z } from "zod";
 
 // Staff/admin credentials
@@ -88,7 +87,14 @@ function PatientLoginForm({ onStaff }: { onStaff: () => void }) {
   const handleSubmit = async (data: PatientLoginData) => {
     setIsLoading(true);
     try {
-      const response = await apiRequest("POST", "/api/auth/patient/login", data);
+      // Use fetch directly (not apiRequest) so we can read response.status for
+      // the 423/429 branches — apiRequest throws on non-2xx before returning.
+      const response = await fetch("/api/auth/patient/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+        credentials: "include",
+      });
       const result = await response.json();
 
       if (!response.ok) {
