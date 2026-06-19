@@ -139,6 +139,11 @@ export function setupAuth(app: Express) {
       if (err) return next(err);
       if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
+      // Patients must use the mobile + MPIN flow, not the staff/admin form.
+      if (user.role === "patient") {
+        return res.status(403).json({ message: "Patients must use Patient Login (mobile number + MPIN)." });
+      }
+
       req.login(user, (err) => {
         if (err) return next(err);
         res.json({
