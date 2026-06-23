@@ -1258,18 +1258,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createClinic(clinicData: typeof clinics.$inferInsert): Promise<Clinic> {
-    // Convert camelCase to snake_case for database fields
+    // Keys must be the Drizzle JS property names (e.g. zipCode, not zip_code) —
+    // Drizzle maps them to their snake_case columns. Unknown keys are silently dropped.
     const formattedData = {
       name: clinicData.name,
       address: clinicData.address,
       city: clinicData.city,
       state: clinicData.state,
-      zip_code: clinicData.zipCode,
+      zipCode: clinicData.zipCode,
       phone: clinicData.phone,
       email: clinicData.email,
-      opening_hours: clinicData.openingHours,
+      openingHours: clinicData.openingHours,
       description: clinicData.description,
-      image_url: clinicData.imageUrl
+      latitude: clinicData.latitude,
+      longitude: clinicData.longitude,
     };
     
     const [clinic] = await db.insert(clinics).values(formattedData).returning();
@@ -1277,19 +1279,21 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateClinic(id: number, clinicData: Partial<typeof clinics.$inferInsert>): Promise<Clinic> {
-    // Convert camelCase to snake_case for database fields
+    // Keys must be the Drizzle JS property names (e.g. zipCode, not zip_code) —
+    // Drizzle maps them to their snake_case columns. Unknown keys are silently dropped.
     const formattedData: Record<string, any> = {};
-    
+
     if (clinicData.name !== undefined) formattedData.name = clinicData.name;
     if (clinicData.address !== undefined) formattedData.address = clinicData.address;
     if (clinicData.city !== undefined) formattedData.city = clinicData.city;
     if (clinicData.state !== undefined) formattedData.state = clinicData.state;
-    if (clinicData.zipCode !== undefined) formattedData.zip_code = clinicData.zipCode;
+    if (clinicData.zipCode !== undefined) formattedData.zipCode = clinicData.zipCode;
     if (clinicData.phone !== undefined) formattedData.phone = clinicData.phone;
     if (clinicData.email !== undefined) formattedData.email = clinicData.email;
-    if (clinicData.openingHours !== undefined) formattedData.opening_hours = clinicData.openingHours;
+    if (clinicData.openingHours !== undefined) formattedData.openingHours = clinicData.openingHours;
     if (clinicData.description !== undefined) formattedData.description = clinicData.description;
-    if (clinicData.imageUrl !== undefined) formattedData.image_url = clinicData.imageUrl;
+    if (clinicData.latitude !== undefined) formattedData.latitude = clinicData.latitude;
+    if (clinicData.longitude !== undefined) formattedData.longitude = clinicData.longitude;
     
     const [updatedClinic] = await db
       .update(clinics)
