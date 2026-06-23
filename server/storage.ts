@@ -1168,6 +1168,11 @@ export class DatabaseStorage implements IStorage {
           maxTokens: doctorSchedules.maxTokens,
           scheduleStatus: doctorSchedules.scheduleStatus,
           bookingStatus: doctorSchedules.bookingStatus,
+          // isActive = "Start Booking"; isVisible = "Show to Patients". The client
+          // needs both to render a visible-but-not-yet-bookable schedule correctly
+          // (Booking Not Started + disabled Book button), matching the View Doctors page.
+          isActive: doctorSchedules.isActive,
+          isVisible: doctorSchedules.isVisible,
           averageConsultationTime: doctorSchedules.averageConsultationTime,
           clinicName: clinics.name,
           clinicAddress: clinics.address

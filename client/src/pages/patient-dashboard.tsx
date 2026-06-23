@@ -282,22 +282,32 @@ export default function PatientDashboard() {
     setLocation(`/book/${doctorId}?scheduleId=${scheduleId}&clinicId=${clinicId}`);
   };
 
-  const ScheduleCard = ({ schedule, doctorId, doctorName }: { 
-    schedule: any; 
-    doctorId: number; 
-    doctorName: string; 
-  }) => (
+  const ScheduleCard = ({ schedule, doctorId, doctorName }: {
+    schedule: any;
+    doctorId: number;
+    doctorName: string;
+  }) => {
+    // Booking only opens once the attender flips "Start Booking" (isActive).
+    // A schedule can be visible (isVisible) yet not bookable; show it but block
+    // booking, exactly like the View Doctors page.
+    const bookingNotStarted = schedule.isActive === false;
+    const isBookable =
+      !bookingNotStarted &&
+      schedule.bookingStatus === 'open' &&
+      schedule.availableSlots !== 0;
+
+    return (
     <div className="p-3 bg-gray-50 rounded text-sm">
       <div className="flex justify-between items-start">
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-2">
             <Clock className="h-4 w-4 text-gray-600" />
             <span className="font-medium">{schedule.startTime} - {schedule.endTime}</span>
-            <Badge 
-              size="sm" 
-              variant={schedule.bookingStatus === 'open' ? 'default' : 'secondary'}
+            <Badge
+              size="sm"
+              variant={bookingNotStarted ? 'destructive' : schedule.bookingStatus === 'open' ? 'default' : 'secondary'}
             >
-              {schedule.bookingStatus}
+              {bookingNotStarted ? 'Booking Not Started' : schedule.bookingStatus}
             </Badge>
           </div>
           
@@ -317,17 +327,18 @@ export default function PatientDashboard() {
           </div>
         </div>
         
-        <Button 
-          size="sm" 
+        <Button
+          size="sm"
           className="ml-3"
           onClick={() => handleBookAppointment(doctorId, schedule.id, schedule.clinicId)}
-          disabled={schedule.bookingStatus !== 'open' || schedule.availableSlots === 0}
+          disabled={!isBookable}
         >
           Book Token
         </Button>
       </div>
     </div>
-  );
+    );
+  };
 
   const ClinicDoctorsView = ({ clinicId }: { clinicId: number }) => {
     const { data: doctors = [], isLoading } = useQuery({
