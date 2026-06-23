@@ -429,8 +429,9 @@ export default function PatientClinicDetails() {
             duration: 8000,
           });
 
-          // Show browser notification if permission is granted
-          if (Notification.permission === 'granted') {
+          // Show browser notification if permission is granted.
+          // Guard for the Notification API — it is absent in the Android WebView (Capacitor).
+          if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
             new Notification('Booking Started!', {
               body: `Your favorited schedule is now active. Book your appointment now!`,
               icon: '/favicon.ico'
@@ -444,9 +445,17 @@ export default function PatientClinicDetails() {
     previousScheduleData.current = currentSchedules;
   }, [scheduleData, user, selectedDoctor, doctors, toast]);
 
-  // Request notification permission on component mount
+  // Request notification permission on component mount.
+  // Guard for the Notification API — it is absent in the Android WebView (Capacitor),
+  // where an unguarded reference throws and blanks the whole page (no error boundary).
   useEffect(() => {
-    if (user && user.role === 'patient' && Notification.permission === 'default') {
+    if (
+      user &&
+      user.role === 'patient' &&
+      typeof window !== 'undefined' &&
+      'Notification' in window &&
+      Notification.permission === 'default'
+    ) {
       Notification.requestPermission();
     }
   }, [user]);
