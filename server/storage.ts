@@ -1258,18 +1258,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createClinic(clinicData: typeof clinics.$inferInsert): Promise<Clinic> {
-    // Convert camelCase to snake_case for database fields
+    // Keys must be the Drizzle JS property names (e.g. zipCode, not zip_code) —
+    // Drizzle maps them to their snake_case columns. Unknown keys are silently dropped.
     const formattedData = {
       name: clinicData.name,
       address: clinicData.address,
       city: clinicData.city,
       state: clinicData.state,
-      zip_code: clinicData.zipCode,
+      zipCode: clinicData.zipCode,
       phone: clinicData.phone,
       email: clinicData.email,
-      opening_hours: clinicData.openingHours,
+      openingHours: clinicData.openingHours,
       description: clinicData.description,
-      image_url: clinicData.imageUrl
+      latitude: clinicData.latitude,
+      longitude: clinicData.longitude,
     };
     
     const [clinic] = await db.insert(clinics).values(formattedData).returning();
