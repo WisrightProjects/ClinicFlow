@@ -1147,7 +1147,11 @@ export class DatabaseStorage implements IStorage {
         eq(doctorSchedules.doctorId, doctorId),
         gte(doctorSchedules.date, startOfDay),
         lte(doctorSchedules.date, endOfDay),
-        eq(doctorSchedules.isActive, true)
+        // Show a today schedule if booking has started (isActive) OR the attender
+        // marked it "Show to Patients" (isVisible). Previously this only checked
+        // isActive, so visible-but-booking-not-started schedules were hidden from
+        // Smart Search even though the View Doctors page showed them.
+        or(eq(doctorSchedules.isActive, true), eq(doctorSchedules.isVisible, true))
       ];
 
       if (clinicId) {
