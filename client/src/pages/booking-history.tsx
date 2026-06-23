@@ -330,8 +330,11 @@ export default function BookingHistoryPage() {
                                   </div>
                                 </div>
                                 
-                                {/* ETA Display for waiting and in-progress tokens */}
-                                {(appointment.status === "token_started" || appointment.status === "in_progress") && (
+                                {/* Show ETA for all live tokens (scheduled, token_started, in_progress, hold, etc.)
+                                    — mirrors the attender dashboard so patients see the same estimate from
+                                    booking onward, including the live update when the doctor arrives. Only
+                                    terminal/past statuses are excluded. */}
+                                {!["expired", "completed", "cancel", "no_show"].includes(appointment.status) && (
                                   <ETADisplay
                                     appointmentId={appointment.id}
                                     tokenNumber={appointment.tokenNumber}
