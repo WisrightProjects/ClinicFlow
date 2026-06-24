@@ -714,8 +714,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Ensure this appointment belongs to the requesting patient
       if (appointment.patientId !== req.user.id) return res.sendStatus(403);
 
-      // Only allow cancellation of token_started appointments
-      if (appointment.status !== 'token_started') {
+      // Only allow cancellation of waiting appointments. 'token_started' is the canonical
+      // waiting status; 'scheduled' is a legacy alternative still present on older rows
+      // (kept here as a safety net — a one-time migration normalizes them to token_started).
+      if (appointment.status !== 'token_started' && appointment.status !== 'scheduled') {
         return res.status(400).json({ message: `Cannot cancel appointment with status: ${appointment.status}` });
       }
 

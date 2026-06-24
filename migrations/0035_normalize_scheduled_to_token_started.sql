@@ -1,0 +1,12 @@
+-- Normalize legacy appointment status: 'scheduled' -> 'token_started'.
+--
+-- 'token_started' is the canonical waiting status; the whole backend keys off it
+-- (doctor-arrival notifications, ETA recalculation, schedule pause, and patient
+-- self-cancellation all check for 'token_started'). Some booking paths had been
+-- re-introducing 'scheduled' after migration 0027 first retired it, so a handful of
+-- waiting appointments are stored as 'scheduled' and silently miss those flows.
+--
+-- This backfill makes those existing rows behave identically to new bookings. Going
+-- forward no code writes 'scheduled' anymore (all booking paths now save 'token_started').
+-- Only waiting rows are affected; completed/cancelled/in_progress/etc. are untouched.
+UPDATE appointments SET status = 'token_started' WHERE status = 'scheduled';
