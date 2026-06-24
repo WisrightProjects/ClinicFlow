@@ -1985,9 +1985,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: 'Doctor not found' });
       }
 
-      // Check for overlapping schedules on the same date
+      // Check for overlapping schedules on the same date. Cancelled schedules are
+      // ignored: a cancelled slot is a dead/historical row (kept for refund + audit
+      // history) and must not block re-creating a fresh schedule at the same time.
+      // Active and not-yet-started schedules still block, so two *live* overlapping
+      // schedules can never coexist.
       const existingSchedules = await storage.getDoctorSchedules(doctorId);
-      const overlappingSchedule = existingSchedules.find(schedule => {
+      const overlappingSchedule = existingSchedules
+        .filter(schedule => schedule.status !== 'cancelled' && !schedule.cancelReason)
+        .find(schedule => {
         const scheduleDate = new Date(schedule.date);
         const newDate = new Date(validData.date);
         
