@@ -39,15 +39,24 @@ interface ScheduleLike {
 
 const SETTLEABLE_STATUSES = ['token_started', 'hold', 'scheduled'];
 
-// Combine the schedule's date (YYYY-MM-DD) + endTime (HH:MM[:SS]) in server-local time
-// and report whether it is now in the past. Server-side guard — never trust a client "ended" flag.
+// Schedule start/end times are stored as clinic-local IST "HH:MM" (matches ETAService).
+const IST_OFFSET_MINUTES = 330; // UTC+5:30
+
+// Whether the schedule's end time (IST wall-clock on its date) is now in the past.
+// Server-side guard — never trust a client "ended" flag. Must interpret endTime as IST,
+// otherwise a UTC-hosted server reads "17:00" as 17:00 UTC (22:30 IST) and wrongly rejects.
 export function isScheduleEnded(schedule: ScheduleLike): boolean {
   if (!schedule?.date || !schedule?.endTime) return false;
-  const [y, mo, d] = String(schedule.date).split('-').map(Number);
   const [h, mi] = String(schedule.endTime).split(':').map(Number);
-  if (!y || !mo || !d) return false;
-  const end = new Date(y, mo - 1, d, h || 0, mi || 0, 0, 0);
-  return new Date() > end;
+  if (Number.isNaN(h) || Number.isNaN(mi)) return false;
+  // date column is "YYYY-MM-DD" -> parsed as UTC midnight.
+  const base = new Date(String(schedule.date));
+  if (Number.isNaN(base.getTime())) return false;
+  // endTime is an IST wall-clock; shift it to its UTC instant with signed minute arithmetic.
+  // (Adding total minutes as ms avoids the hour/minute decomposition bug for IST times before
+  //  05:30, where the offset goes negative and floor/modulo would land an hour early.)
+  const endUtcMs = base.getTime() + (h * 60 + mi - IST_OFFSET_MINUTES) * 60 * 1000;
+  return Date.now() > endUtcMs;
 }
 
 // Per-schedule ownership: a user may only resolve a schedule they actually manage.
