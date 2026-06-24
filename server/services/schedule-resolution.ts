@@ -49,12 +49,14 @@ export function isScheduleEnded(schedule: ScheduleLike): boolean {
   if (!schedule?.date || !schedule?.endTime) return false;
   const [h, mi] = String(schedule.endTime).split(':').map(Number);
   if (Number.isNaN(h) || Number.isNaN(mi)) return false;
-  // date column is "YYYY-MM-DD" -> parsed as UTC midnight; shift the IST wall-clock to its UTC instant.
-  const end = new Date(String(schedule.date));
-  if (Number.isNaN(end.getTime())) return false;
-  const utcMinutes = h * 60 + mi - IST_OFFSET_MINUTES;
-  end.setUTCHours(Math.floor(utcMinutes / 60), utcMinutes % 60, 0, 0);
-  return new Date() > end;
+  // date column is "YYYY-MM-DD" -> parsed as UTC midnight.
+  const base = new Date(String(schedule.date));
+  if (Number.isNaN(base.getTime())) return false;
+  // endTime is an IST wall-clock; shift it to its UTC instant with signed minute arithmetic.
+  // (Adding total minutes as ms avoids the hour/minute decomposition bug for IST times before
+  //  05:30, where the offset goes negative and floor/modulo would land an hour early.)
+  const endUtcMs = base.getTime() + (h * 60 + mi - IST_OFFSET_MINUTES) * 60 * 1000;
+  return Date.now() > endUtcMs;
 }
 
 // Per-schedule ownership: a user may only resolve a schedule they actually manage.
