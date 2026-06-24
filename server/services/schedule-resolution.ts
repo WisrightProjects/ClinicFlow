@@ -5,7 +5,7 @@
 // validate -> service -> return guideline.
 import { db } from '../db';
 import { appointments } from '@shared/schema';
-import { eq } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { storage } from '../storage';
 import { walletService } from './wallet';
 
@@ -67,12 +67,18 @@ export async function userCanResolveSchedule(user: OwnableUser, schedule: Schedu
 // Settle one token to a terminal status WITHOUT firing queue/"your turn" notifications
 // (the schedule is already over). For 'completed', backfill timings only when missing so an
 // earlier real in_progress start time is preserved.
+//
+// The write is an ATOMIC conditional update: it only changes the row while it is still
+// settleable AND belongs to this schedule. Under concurrent resolver requests the loser writes
+// 0 rows (returns false) — so a terminal status is never overwritten and the summary is never
+// double-counted. Returns whether this call actually performed the write.
 async function settleToken(
   appointmentId: number,
+  scheduleId: number,
   status: 'completed' | 'no_show' | 'cancel',
   statusNotes: string,
   existingStartTime: Date | null
-): Promise<void> {
+): Promise<boolean> {
   const updateData: Partial<typeof appointments.$inferInsert> = { status, statusNotes };
   if (status === 'completed') {
     const now = new Date();
@@ -82,7 +88,16 @@ async function settleToken(
       updateData.actualStartTime = new Date(now.getTime() - 15 * 60 * 1000);
     }
   }
-  await db.update(appointments).set(updateData).where(eq(appointments.id, appointmentId));
+  const written = await db
+    .update(appointments)
+    .set(updateData)
+    .where(and(
+      eq(appointments.id, appointmentId),
+      eq(appointments.scheduleId, scheduleId),
+      inArray(appointments.status, SETTLEABLE_STATUSES)
+    ))
+    .returning({ id: appointments.id });
+  return written.length > 0;
 }
 
 export async function resolveEndedScheduleTokens(
@@ -110,20 +125,27 @@ export async function resolveEndedScheduleTokens(
     const startTime = appt.actualStartTime ?? null;
 
     if (outcome === 'seen') {
-      await settleToken(appointmentId, 'completed', 'Resolved after schedule end — patient was consulted', startTime);
-      summary.completed++;
+      if (await settleToken(appointmentId, scheduleId, 'completed', 'Resolved after schedule end — patient was consulted', startTime)) {
+        summary.completed++;
+      } else {
+        summary.skipped++; // a concurrent request already settled it
+      }
     } else if (outcome === 'no_show') {
-      await settleToken(appointmentId, 'no_show', 'Resolved after schedule end — patient did not attend', startTime);
-      summary.noShow++;
+      if (await settleToken(appointmentId, scheduleId, 'no_show', 'Resolved after schedule end — patient did not attend', startTime)) {
+        summary.noShow++;
+      } else {
+        summary.skipped++;
+      }
     } else if (outcome === 'refund') {
-      // Refund FIRST so a failure leaves the token still settleable (token_started) for a safe
-      // retry — never a cancelled-but-unrefunded token. Only mark cancelled once refund returns.
+      // Refund FIRST so a failure leaves the token still settleable for a safe retry — never a
+      // cancelled-but-unrefunded token. The refund is idempotent (hasBeenRefunded guard), so under
+      // concurrency exactly one call moves money; count refunded on that, not on the status write.
       const rr = await walletService.processSingleAppointmentRefund(
         appointmentId,
         'Doctor unavailable — schedule ended',
         processedByUserId
       );
-      await settleToken(appointmentId, 'cancel', 'Doctor unavailable — schedule ended', startTime);
+      await settleToken(appointmentId, scheduleId, 'cancel', 'Doctor unavailable — schedule ended', startTime);
       if (rr.refunded) {
         summary.refunded++;
         summary.totalRefund += rr.refundAmount;
@@ -131,12 +153,23 @@ export async function resolveEndedScheduleTokens(
     }
   }
 
-  // Mark the schedule completed so it clears from the "needs resolution" banner.
-  // Every settleable token is now terminal, so completeSchedule's "cancel remaining" is a no-op.
-  try {
-    await storage.completeSchedule(scheduleId);
-  } catch (e) {
-    console.error('Error marking schedule completed after token resolution:', e);
+  // Finalize the schedule ONLY when no settleable tokens remain. If this request did not cover
+  // every leftover token, leave the schedule open — otherwise completeSchedule would silently
+  // cancel still-undecided tokens (no per-token decision, no refund), and the banner must persist.
+  const remaining = await db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(and(
+      eq(appointments.scheduleId, scheduleId),
+      inArray(appointments.status, SETTLEABLE_STATUSES)
+    ));
+
+  if (remaining.length === 0) {
+    try {
+      await storage.completeSchedule(scheduleId);
+    } catch (e) {
+      console.error('Error marking schedule completed after token resolution:', e);
+    }
   }
 
   return summary;
