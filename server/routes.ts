@@ -2022,8 +2022,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       if (overlappingSchedule) {
-        return res.status(400).json({ 
-          message: 'Schedule overlaps with an existing schedule for this date' 
+        return res.status(400).json({
+          message: `${doctor.name} already has a schedule from ${overlappingSchedule.startTime} to ${overlappingSchedule.endTime} on this date. Please choose a different time, or remove the existing schedule first.`
         });
       }
 
