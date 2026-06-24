@@ -369,31 +369,6 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  // Settle a single token of an already-ended schedule to a terminal status.
-  // Unlike updateAppointmentStatus, this does NOT fire queue/"your turn" notifications
-  // (the schedule is already over, so notifying a "next" patient would be wrong noise).
-  // Used by POST /api/schedules/:id/resolve-tokens. Refund (for 'cancel') is handled
-  // by the caller via walletService.processSingleAppointmentRefund.
-  async settleEndedScheduleToken(
-    appointmentId: number,
-    status: 'completed' | 'no_show' | 'cancel',
-    statusNotes: string
-  ): Promise<Appointment | null> {
-    const updateData: Partial<typeof appointments.$inferInsert> = { status, statusNotes };
-    if (status === 'completed') {
-      const now = new Date();
-      updateData.actualEndTime = now;
-      // Estimate a start time so duration-based reports stay sane.
-      updateData.actualStartTime = new Date(now.getTime() - 15 * 60 * 1000);
-    }
-    const [updated] = await db
-      .update(appointments)
-      .set(updateData)
-      .where(eq(appointments.id, appointmentId))
-      .returning();
-    return updated || null;
-  }
-
   async closeScheduleBooking(scheduleId: number): Promise<void> {
     await db
       .update(doctorSchedules)
