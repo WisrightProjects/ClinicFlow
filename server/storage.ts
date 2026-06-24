@@ -36,7 +36,7 @@ import {
   type AppointmentRefund,
   type TokenReservation
 } from "@shared/schema";
-import { eq, or, and, sql, inArray, lte, gte, count, not, gt, lt, getTableColumns, isNotNull, ne, max } from "drizzle-orm";
+import { eq, or, and, sql, inArray, lte, gte, count, not, gt, lt, getTableColumns, isNotNull, isNull, ne, max } from "drizzle-orm";
 import { db } from "./db";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
@@ -1151,7 +1151,11 @@ export class DatabaseStorage implements IStorage {
         // marked it "Show to Patients" (isVisible). Previously this only checked
         // isActive, so visible-but-booking-not-started schedules were hidden from
         // Smart Search even though the View Doctors page showed them.
-        or(eq(doctorSchedules.isActive, true), eq(doctorSchedules.isVisible, true))
+        or(eq(doctorSchedules.isActive, true), eq(doctorSchedules.isVisible, true)),
+        // Never surface cancelled schedules to patients. A cancelled schedule keeps
+        // isVisible=true, so without this it would still appear (mislabelled as
+        // "Booking Not Started"). cancelReason is the definitive cancellation marker.
+        isNull(doctorSchedules.cancelReason)
       ];
 
       if (clinicId) {
@@ -2845,8 +2849,13 @@ export class DatabaseStorage implements IStorage {
     }
 
     if (visibleOnly) {
-      // For patient views, only show visible schedules
+      // For patient views, only show visible schedules...
       conditions.push(eq(doctorSchedules.isVisible, true));
+      // ...and never a cancelled one. Cancellation leaves isVisible=true, so a
+      // cancelled schedule would otherwise still render on the View Doctors page
+      // (mislabelled "Booking Not Started"). The patient is notified + refunded
+      // separately; the dead slot should simply disappear from the booking list.
+      conditions.push(isNull(doctorSchedules.cancelReason));
     }
 
     // Join with users table to get creator information
