@@ -291,8 +291,25 @@ export default function PatientDashboard() {
     // A schedule can be visible (isVisible) yet not bookable; show it but block
     // booking, exactly like the View Doctors page.
     const bookingNotStarted = schedule.isActive === false;
+
+    // Block booking once today's schedule end time has passed. The Search card was
+    // meant to match the View Doctors page (patient-clinic-details.tsx) but only
+    // copied the "booking not started" check, so an ended schedule still showed an
+    // enabled "Book Token" button here while View Doctors correctly disabled it.
+    const now = new Date();
+    const schDate = new Date(schedule.date);
+    const isTodaySchedule = now.toDateString() === schDate.toDateString();
+    let isEndTimePassed = false;
+    if (isTodaySchedule && schedule.endTime) {
+      const [endHour, endMin] = schedule.endTime.split(':').map(Number);
+      const endTimeToday = new Date();
+      endTimeToday.setHours(endHour, endMin, 0, 0);
+      isEndTimePassed = now > endTimeToday;
+    }
+
     const isBookable =
       !bookingNotStarted &&
+      !isEndTimePassed &&
       schedule.bookingStatus === 'open' &&
       schedule.availableSlots !== 0;
 
@@ -305,9 +322,9 @@ export default function PatientDashboard() {
             <span className="font-medium">{schedule.startTime} - {schedule.endTime}</span>
             <Badge
               size="sm"
-              variant={bookingNotStarted ? 'destructive' : schedule.bookingStatus === 'open' ? 'default' : 'secondary'}
+              variant={bookingNotStarted ? 'destructive' : isEndTimePassed ? 'secondary' : schedule.bookingStatus === 'open' ? 'default' : 'secondary'}
             >
-              {bookingNotStarted ? 'Booking Not Started' : schedule.bookingStatus}
+              {bookingNotStarted ? 'Booking Not Started' : isEndTimePassed ? 'Ended' : schedule.bookingStatus}
             </Badge>
           </div>
           
