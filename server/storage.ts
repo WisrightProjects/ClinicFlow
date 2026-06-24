@@ -1153,8 +1153,11 @@ export class DatabaseStorage implements IStorage {
         // Smart Search even though the View Doctors page showed them.
         or(eq(doctorSchedules.isActive, true), eq(doctorSchedules.isVisible, true)),
         // Never surface cancelled schedules to patients. A cancelled schedule keeps
-        // isVisible=true, so without this it would still appear (mislabelled as
-        // "Booking Not Started"). cancelReason is the definitive cancellation marker.
+        // isVisible=true but is marked by status='cancelled' + cancelReason, so without
+        // this it would still appear (mislabelled "Booking Not Started"). Exclude on both
+        // markers so detection matches the schedule-creation overlap guard exactly and a
+        // status-cancelled row can never leak even if cancelReason were ever empty.
+        ne(doctorSchedules.status, 'cancelled'),
         isNull(doctorSchedules.cancelReason)
       ];
 
@@ -2851,10 +2854,12 @@ export class DatabaseStorage implements IStorage {
     if (visibleOnly) {
       // For patient views, only show visible schedules...
       conditions.push(eq(doctorSchedules.isVisible, true));
-      // ...and never a cancelled one. Cancellation leaves isVisible=true, so a
-      // cancelled schedule would otherwise still render on the View Doctors page
-      // (mislabelled "Booking Not Started"). The patient is notified + refunded
-      // separately; the dead slot should simply disappear from the booking list.
+      // ...and never a cancelled one. Cancellation leaves isVisible=true but sets
+      // status='cancelled' + cancelReason. Exclude on both markers so this matches the
+      // overlap guard's definition of "cancelled" (a status-cancelled row can never leak
+      // to patients even if cancelReason were somehow empty). The patient is notified +
+      // refunded separately; the dead slot should simply disappear from the booking list.
+      conditions.push(ne(doctorSchedules.status, 'cancelled'));
       conditions.push(isNull(doctorSchedules.cancelReason));
     }
 
