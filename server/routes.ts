@@ -2571,9 +2571,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         guestName,
         guestPhone,
         isWalkIn: true,
-        status: "scheduled"
+        status: "token_started"
       };
-      
+
       const appointment = await storage.createWalkInAppointment(appointmentData);
       res.status(201).json(appointment);
     } catch (error) {

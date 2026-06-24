@@ -82,7 +82,7 @@ export default function BookingPage() {
       const res = await apiRequest("POST", "/api/appointments", {
         doctorId: Number(doctorId),
         date: appointmentDate.toISOString(),
-        status: "scheduled",
+        status: "token_started",
         ...(scheduleId && { scheduleId: Number(scheduleId) }),
         ...(clinicId && { clinicId: Number(clinicId) })
       });
