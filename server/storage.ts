@@ -2951,6 +2951,12 @@ export class DatabaseStorage implements IStorage {
           eq(doctorSchedules.doctorId, doctorId),
           sql`DATE(${doctorSchedules.date}) = DATE(${date.toISOString()})`,
           eq(doctorSchedules.isVisible, true), // Only show visible schedules to patients
+          // Never offer a cancelled schedule for booking. Cancellation leaves
+          // isVisible=true, so without this the booking page renders a "Book Now"
+          // card for a dead slot. Match the same cancelled-detection used by the
+          // other patient surfaces (status + cancelReason).
+          ne(doctorSchedules.status, 'cancelled'),
+          isNull(doctorSchedules.cancelReason)
           // Show schedules unless they are completed (patients should see completed/closed for info)
         )
       )
@@ -3499,7 +3505,15 @@ export class DatabaseStorage implements IStorage {
         .innerJoin(users, eq(patientFavorites.doctorId, users.id))
         .innerJoin(doctorSchedules, eq(patientFavorites.scheduleId, doctorSchedules.id))
         .innerJoin(clinics, eq(patientFavorites.clinicId, clinics.id))
-        .where(eq(patientFavorites.patientId, patientId))
+        // Exclude favourites whose schedule has been cancelled — a cancelled
+        // schedule keeps isVisible=true, so without this filter it would still
+        // surface (with a bookable card) in the patient's Favorites list. Same
+        // cancelled-detection as the other patient surfaces (status + cancelReason).
+        .where(and(
+          eq(patientFavorites.patientId, patientId),
+          ne(doctorSchedules.status, 'cancelled'),
+          isNull(doctorSchedules.cancelReason)
+        ))
         .orderBy(patientFavorites.createdAt);
 
       return favorites;
