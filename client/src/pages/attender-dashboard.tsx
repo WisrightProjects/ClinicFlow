@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/tooltip";
 import { InfoIcon } from "lucide-react";
 import { AppointmentActions } from "@/components/appointment-actions";
+import { ResolveScheduleDialog } from "@/components/resolve-schedule-dialog";
 import { ETADisplay } from "@/components/eta-display";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
@@ -56,6 +57,23 @@ type DoctorWithAppointments = {
   clinicId: number;
   schedules: DoctorSchedule[];
 };
+
+// Tokens that still need settling once a schedule has ended.
+const SETTLEABLE_STATUSES = ["token_started", "hold", "scheduled"];
+
+// A schedule has ended when its date + endTime is in the past (server enforces this too).
+function isScheduleEnded(schedule: { date?: any; endTime?: string }): boolean {
+  if (!schedule?.date || !schedule?.endTime) return false;
+  const d = new Date(schedule.date);
+  if (isNaN(d.getTime())) return false;
+  const [h, m] = String(schedule.endTime).split(":").map(Number);
+  const end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h || 0, m || 0, 0, 0);
+  return new Date() > end;
+}
+
+function getUnsettledCount(schedule: { appointments?: any[] }): number {
+  return (schedule.appointments || []).filter((a: any) => SETTLEABLE_STATUSES.includes(a.status)).length;
+}
 
 export default function AttenderDashboard() {
   const { user } = useAuth();
@@ -521,6 +539,32 @@ export default function AttenderDashboard() {
     }
   });
 
+  // State + mutation for resolving an ENDED schedule's leftover tokens
+  const [resolveTarget, setResolveTarget] = useState<{ schedule: any; doctorName: string } | null>(null);
+
+  const resolveTokensMutation = useMutation({
+    mutationFn: async ({ scheduleId, resolutions }: { scheduleId: number; resolutions: Array<{ appointmentId: number; outcome: string }> }) => {
+      const res = await apiRequest("POST", `/api/schedules/${scheduleId}/resolve-tokens`, { resolutions });
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries([`/api/attender/${user?.id}/doctors/appointments`]);
+      queryClient.invalidateQueries({ queryKey: ["schedulesToday"] });
+      setResolveTarget(null);
+      toast({
+        title: "Tokens resolved",
+        description: `${data?.completed || 0} completed · ${data?.noShow || 0} no-show · ${data?.refunded || 0} refunded (₹${data?.totalRefund || 0}).`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: "Failed to resolve tokens: " + error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   // Mutation for toggling booking status
   const toggleBookingMutation = useMutation({
     mutationFn: async ({ 
@@ -807,6 +851,35 @@ export default function AttenderDashboard() {
                         </div>
                       </div>
 
+                      {/* Ended-schedule resolution banner */}
+                      {(() => {
+                        const needsResolution = schedulesForDay.filter(
+                          (s: any) => s.scheduleStatus !== 'completed' && isScheduleEnded(s) && getUnsettledCount(s) > 0
+                        );
+                        if (needsResolution.length === 0) return null;
+                        return (
+                          <Alert className="mb-4 border-amber-300 bg-amber-50">
+                            <AlertCircle className="h-4 w-4 text-amber-600" />
+                            <AlertDescription className="text-amber-800">
+                              {needsResolution.length} ended schedule{needsResolution.length !== 1 ? 's' : ''} need
+                              {needsResolution.length === 1 ? 's' : ''} resolution — settle the unsettled tokens (refund or close).
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {needsResolution.map((s: any) => (
+                                  <Button
+                                    key={s.id}
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setResolveTarget({ schedule: s, doctorName: doctorData.doctor.name })}
+                                  >
+                                    Resolve {s.startTime}–{s.endTime} ({getUnsettledCount(s)})
+                                  </Button>
+                                ))}
+                              </div>
+                            </AlertDescription>
+                          </Alert>
+                        );
+                      })()}
+
                       {schedulesForDay.length === 0 ? (
                         <div className="bg-muted p-6 rounded-lg text-center">
                           <CalendarIcon className="mx-auto h-10 w-10 text-muted-foreground mb-2" />
@@ -927,6 +1000,15 @@ export default function AttenderDashboard() {
                                           >
                                             Complete Schedule
                                           </Button>
+                                          {schedule.scheduleStatus !== 'completed' && isScheduleEnded(schedule) && getUnsettledCount(schedule) > 0 && (
+                                            <Button
+                                              size="sm"
+                                              className="gap-2 bg-amber-600 hover:bg-amber-700 text-white"
+                                              onClick={() => setResolveTarget({ schedule, doctorName: doctorData.doctor.name })}
+                                            >
+                                              Resolve {getUnsettledCount(schedule)} Token{getUnsettledCount(schedule) !== 1 ? 's' : ''}
+                                            </Button>
+                                          )}
                                           <Button
                                             variant="outline"
                                             size="sm"
@@ -1293,6 +1375,21 @@ export default function AttenderDashboard() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Resolve ended-schedule tokens */}
+      {resolveTarget && (
+        <ResolveScheduleDialog
+          open={!!resolveTarget}
+          onOpenChange={(o) => { if (!o) setResolveTarget(null); }}
+          doctorName={resolveTarget.doctorName}
+          scheduleLabel={`${resolveTarget.schedule.startTime} - ${resolveTarget.schedule.endTime}`}
+          appointments={resolveTarget.schedule.appointments || []}
+          isSubmitting={resolveTokensMutation.isPending}
+          onConfirm={(resolutions) =>
+            resolveTokensMutation.mutate({ scheduleId: resolveTarget.schedule.id, resolutions })
+          }
+        />
+      )}
     </div>
   );
 }

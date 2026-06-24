@@ -3902,6 +3902,98 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Resolve the leftover tokens of an ENDED schedule (Attender/Admin).
+  // For each token the attender chose an outcome:
+  //   'seen'    -> completed (no refund)        [doctor saw them, attender forgot to mark]
+  //   'no_show' -> no_show   (no refund)        [patient never turned up]
+  //   'refund'  -> cancel + wallet refund       [doctor unavailable / patient not seen]
+  // Refund reuses the existing per-token refund engine (guards walk-ins/unpaid/already-refunded).
+  app.post("/api/schedules/:scheduleId/resolve-tokens", async (req, res) => {
+    if (!req.user || !['attender', 'clinic_admin', 'hospital_admin'].includes(req.user.role)) {
+      return res.status(403).json({ message: 'Attender or admin access required' });
+    }
+
+    // Combine the schedule's date (YYYY-MM-DD) + endTime (HH:MM[:SS]) in server-local time
+    // and confirm it is in the past. Do NOT trust a client-supplied "ended" flag.
+    const isScheduleEnded = (schedule: { date?: string | null; endTime?: string | null }): boolean => {
+      if (!schedule?.date || !schedule?.endTime) return false;
+      const [y, mo, d] = String(schedule.date).split('-').map(Number);
+      const [h, mi] = String(schedule.endTime).split(':').map(Number);
+      if (!y || !mo || !d) return false;
+      const end = new Date(y, mo - 1, d, h || 0, mi || 0, 0, 0);
+      return new Date() > end;
+    };
+
+    try {
+      const scheduleId = parseInt(req.params.scheduleId);
+      const { resolutions } = req.body as { resolutions?: Array<{ appointmentId: number; outcome: string }> };
+
+      if (!Array.isArray(resolutions) || resolutions.length === 0) {
+        return res.status(400).json({ message: 'resolutions array is required' });
+      }
+
+      const schedule = await storage.getDoctorSchedule(scheduleId);
+      if (!schedule) {
+        return res.status(404).json({ message: 'Schedule not found' });
+      }
+
+      if (!isScheduleEnded(schedule as any)) {
+        return res.status(400).json({ message: 'Schedule has not ended yet — tokens can only be resolved after the schedule end time.' });
+      }
+
+      const summary = { completed: 0, noShow: 0, refunded: 0, totalRefund: 0, skipped: 0 };
+      const settleable = ['token_started', 'hold', 'scheduled'];
+
+      for (const r of resolutions) {
+        const appointmentId = Number(r?.appointmentId);
+        const outcome = r?.outcome;
+        if (!appointmentId || !['seen', 'no_show', 'refund'].includes(outcome)) {
+          summary.skipped++;
+          continue;
+        }
+
+        const appt = await storage.getAppointment(appointmentId);
+        // Skip anything that is not part of this schedule or is already terminal — prevents double refunds.
+        if (!appt || appt.scheduleId !== scheduleId || !settleable.includes(appt.status || '')) {
+          summary.skipped++;
+          continue;
+        }
+
+        if (outcome === 'seen') {
+          await storage.settleEndedScheduleToken(appointmentId, 'completed', 'Resolved after schedule end — patient was consulted');
+          summary.completed++;
+        } else if (outcome === 'no_show') {
+          await storage.settleEndedScheduleToken(appointmentId, 'no_show', 'Resolved after schedule end — patient did not attend');
+          summary.noShow++;
+        } else if (outcome === 'refund') {
+          await storage.settleEndedScheduleToken(appointmentId, 'cancel', 'Doctor unavailable — schedule ended');
+          const rr = await walletService.processSingleAppointmentRefund(
+            appointmentId,
+            'Doctor unavailable — schedule ended',
+            req.user!.id
+          );
+          if (rr.refunded) {
+            summary.refunded++;
+            summary.totalRefund += rr.refundAmount;
+          }
+        }
+      }
+
+      // Mark the schedule completed so it clears from the "needs resolution" banner.
+      // By now every settleable token is terminal, so completeSchedule's "cancel remaining" is a no-op.
+      try {
+        await storage.completeSchedule(scheduleId);
+      } catch (e) {
+        console.error('Error marking schedule completed after token resolution:', e);
+      }
+
+      res.json({ message: 'Tokens resolved successfully', ...summary });
+    } catch (error) {
+      console.error('Error resolving schedule tokens:', error);
+      res.status(500).json({ message: error instanceof Error ? error.message : 'Failed to resolve tokens' });
+    }
+  });
+
   // Process partial refunds when doctor leaves mid-session
   app.post("/api/schedules/:scheduleId/partial-refunds", async (req, res) => {
     if (!req.user || !['attender', 'clinic_admin', 'hospital_admin'].includes(req.user.role)) {
