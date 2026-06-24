@@ -1019,7 +1019,7 @@ export default function AttenderDashboard() {
                                                       "outline"
                                                     }
                                                   >
-                                                    {appointment.status === "token_started" ? "Token Started" :
+                                                    {appointment.status === "token_started" ? "Scheduled" :
                                                     appointment.status === "scheduled" ? "Scheduled" :
                                                     appointment.status === "in_progress" ? "In Progress" :
                                                     appointment.status === "hold" ? "On Hold" :
@@ -1159,7 +1159,7 @@ export default function AttenderDashboard() {
                                                         "outline"
                                                       }
                                                     >
-                                                      {appointment.status === "token_started" ? "Token Started" :
+                                                      {appointment.status === "token_started" ? "Scheduled" :
                                                       appointment.status === "scheduled" ? "Scheduled" :
                                                       appointment.status === "in_progress" ? "In Progress" :
                                                       appointment.status === "hold" ? "On Hold" :

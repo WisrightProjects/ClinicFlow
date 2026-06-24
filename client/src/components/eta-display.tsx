@@ -30,10 +30,13 @@ function getStageInfo(status: string, doctorHasArrived: boolean, avgConsultation
   if (status === "pause") {
     return { label: "Paused", variant: "outline" as const, description: "Schedule paused", isLive: false };
   }
-  if (status === "token_started" && !doctorHasArrived) {
+  // "scheduled" and "token_started" are both pre-consultation waiting states (just two
+  // initial values saved by different booking paths). Treat them identically so a waiting
+  // token never shows the misleading "Live" badge before the doctor has arrived.
+  if ((status === "token_started" || status === "scheduled") && !doctorHasArrived) {
     return { label: "Scheduled", variant: "outline" as const, description: "Based on scheduled start time", isLive: false };
   }
-  if (status === "token_started" && doctorHasArrived) {
+  if ((status === "token_started" || status === "scheduled") && doctorHasArrived) {
     return { label: "Updated", variant: "secondary" as const, description: "Updated for doctor arrival", isLive: false };
   }
   if (status === "in_progress") {

@@ -142,7 +142,7 @@ export default function PatientClinicDetails() {
         scheduleId: appointmentData.scheduleId,
         date: appointmentDate.toISOString(),
         tokenNumber: tokenNumber,
-        status: "scheduled"
+        status: "token_started"
       });
 
       // Try using fetch directly instead of apiRequest
@@ -157,7 +157,7 @@ export default function PatientClinicDetails() {
           scheduleId: appointmentData.scheduleId,
           date: appointmentDate.toISOString(),
           tokenNumber: tokenNumber,
-          status: "scheduled",
+          status: "token_started",
           isOnBehalf: appointmentData.isOnBehalf || false,
           guestName: appointmentData.guestName || null,
           guestPhone: appointmentData.guestPhone || null,

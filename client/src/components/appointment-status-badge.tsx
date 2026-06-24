@@ -38,7 +38,7 @@ export function AppointmentStatusBadge({ status, statusNotes }: AppointmentStatu
   return (
     <div className="flex items-center">
       <Badge variant={getVariant()}>
-        {status === "token_started" ? "Token Started" :
+        {status === "token_started" ? "Scheduled" :
         status === "in_progress" ? "In Progress" :
         status === "hold" ? "Hold" :
         status === "pause" ? "Pause" :
