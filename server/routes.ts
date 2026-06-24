@@ -9,6 +9,7 @@ import { z } from "zod";
 import { notificationService } from './services/notification';
 import { ETAService } from './services/eta';
 import { walletService } from './services/wallet';
+import { isScheduleEnded, userCanResolveSchedule, resolveEndedScheduleTokens } from './services/schedule-resolution';
 import { db } from './db';
 import { eq, and, sql, isNull, not, gte } from 'drizzle-orm';
 import { scrypt, randomBytes } from "crypto";
@@ -3899,6 +3900,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error cancelling schedule with refunds:', error);
       res.status(500).json({ message: error instanceof Error ? error.message : 'Failed to cancel schedule with refunds' });
+    }
+  });
+
+  // Resolve the leftover tokens of an ENDED schedule (Attender/Admin).
+  // Thin handler: validate + authorise, then delegate the workflow to the
+  // schedule-resolution service (per-token outcome mapping, refund, completion).
+  app.post("/api/schedules/:scheduleId/resolve-tokens", async (req, res) => {
+    if (!req.user || !['attender', 'clinic_admin', 'super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ message: 'Attender or admin access required' });
+    }
+
+    try {
+      const scheduleId = parseInt(req.params.scheduleId);
+      const { resolutions } = req.body as { resolutions?: Array<{ appointmentId: number; outcome: string }> };
+
+      if (!Array.isArray(resolutions) || resolutions.length === 0) {
+        return res.status(400).json({ message: 'resolutions array is required' });
+      }
+
+      const schedule = await storage.getDoctorSchedule(scheduleId);
+      if (!schedule) {
+        return res.status(404).json({ message: 'Schedule not found' });
+      }
+
+      if (!isScheduleEnded(schedule)) {
+        return res.status(400).json({ message: 'Schedule has not ended yet — tokens can only be resolved after the schedule end time.' });
+      }
+
+      // Per-schedule ownership: caller must actually manage this schedule's doctor/clinic.
+      if (!(await userCanResolveSchedule(req.user as any, schedule))) {
+        return res.status(403).json({ message: 'You can only resolve schedules you manage.' });
+      }
+
+      const summary = await resolveEndedScheduleTokens(scheduleId, resolutions, req.user.id);
+      res.json({ message: 'Tokens resolved successfully', ...summary });
+    } catch (error) {
+      console.error('Error resolving schedule tokens:', error);
+      res.status(500).json({ message: error instanceof Error ? error.message : 'Failed to resolve tokens' });
     }
   });
 
