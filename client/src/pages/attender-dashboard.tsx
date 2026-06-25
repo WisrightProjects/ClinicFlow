@@ -968,10 +968,13 @@ export default function AttenderDashboard() {
                                           )}
                                         </div>
                                         <div className="flex flex-wrap gap-2 items-center">
+                                          {/* Lock arrival once the schedule's end time has passed — a doctor can't
+                                              "arrive" for an over schedule. If the attender forgot to mark arrival,
+                                              recovery is via Resolve -> "Doctor saw everyone — mark all completed". */}
                                           <Button
                                             variant={getPresenceData(doctorData.doctor.id, schedule.id).hasArrived ? "default" : "outline"}
                                             className="gap-2"
-                                            disabled={getPresenceData(doctorData.doctor.id, schedule.id).hasArrived || schedule.scheduleStatus === 'completed'}
+                                            disabled={getPresenceData(doctorData.doctor.id, schedule.id).hasArrived || schedule.scheduleStatus === 'completed' || isScheduleEnded(schedule)}
                                             onClick={() => handleToggleDoctorArrival(
                                               doctorData.doctor.id,
                                               schedule.clinicId || doctorData.clinicId || user?.clinicId,
