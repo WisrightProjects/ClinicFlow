@@ -9,20 +9,34 @@ import { eq } from 'drizzle-orm';
 
 let adminApp: App | null = null;
 
+// Read the service account JSON, preferring an env var (survives container redeploys
+// on hosts like Coolify where the git-ignored key file is wiped on each deploy) and
+// falling back to a file on disk for local development.
+// FIREBASE_SERVICE_ACCOUNT may hold the raw JSON or a base64-encoded copy of it.
+function loadServiceAccount(): Record<string, any> | null {
+  const fromEnv = process.env.FIREBASE_SERVICE_ACCOUNT?.trim();
+  if (fromEnv) {
+    const raw = fromEnv.startsWith('{') ? fromEnv : Buffer.from(fromEnv, 'base64').toString('utf-8');
+    return JSON.parse(raw);
+  }
+  // Try both server/ (development) and dist/ (production) locations
+  const candidates = [
+    resolve(process.cwd(), 'server', 'firebase-service-account.json'),
+    resolve(process.cwd(), 'dist', 'firebase-service-account.json'),
+  ];
+  const keyPath = candidates.find(p => existsSync(p));
+  if (!keyPath) return null;
+  return JSON.parse(readFileSync(keyPath, 'utf-8'));
+}
+
 function getAdminApp(): App | null {
   if (adminApp) return adminApp;
   try {
-    // Try both dist/server/ (production) and server/ (development) locations
-    const candidates = [
-      resolve(process.cwd(), 'server', 'firebase-service-account.json'),
-      resolve(process.cwd(), 'dist', 'firebase-service-account.json'),
-    ];
-    const keyPath = candidates.find(p => existsSync(p));
-    if (!keyPath) {
-      console.warn('firebase-service-account.json not found — push notifications disabled');
+    const serviceAccount = loadServiceAccount();
+    if (!serviceAccount) {
+      console.warn('Firebase service account not found (set FIREBASE_SERVICE_ACCOUNT or add the key file) — push notifications disabled');
       return null;
     }
-    const serviceAccount = JSON.parse(readFileSync(keyPath, 'utf-8'));
     if (getApps().length === 0) {
       adminApp = initializeApp({ credential: cert(serviceAccount) });
     } else {
