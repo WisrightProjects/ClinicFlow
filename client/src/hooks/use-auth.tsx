@@ -36,14 +36,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
-  // Register the native FCM push token once an authenticated user is present.
+  // Register the native FCM push token whenever the authenticated user changes.
   // Done here (not in each login screen) so it covers every auth path — staff
-  // password, patient MPIN (which full-reloads to /home), and patient OTP — and
-  // re-registers on each app launch to keep the token fresh. No-op on web.
-  const fcmRegistered = useRef(false);
+  // password, patient MPIN (which full-reloads to /home), and patient OTP. Keyed
+  // on the user id (not a one-shot flag) so that after a logout + login-as-a-
+  // different-user on the same device, the token is re-registered and reassigned
+  // to the new user rather than staying with the previous one. No-op on web.
+  const lastRegisteredUserId = useRef<number | null>(null);
   useEffect(() => {
-    if (user && !fcmRegistered.current) {
-      fcmRegistered.current = true;
+    const currentUserId = user?.id ?? null;
+    if (currentUserId && lastRegisteredUserId.current !== currentUserId) {
+      lastRegisteredUserId.current = currentUserId;
       registerFcmToken();
     }
   }, [user]);
