@@ -9,21 +9,64 @@ interface NotificationData {
   type: string;
 }
 
+/**
+ * Map a notification type to the in-app deep-link route the push should open
+ * when tapped. Keeps the patient landing on the relevant screen rather than a
+ * generic one. Unknown types fall back to the appointments list.
+ */
+function routeForType(type: string): string {
+  if (type === 'schedule_activated') return '/booking';
+  if (type.startsWith('wallet_')) return '/wallet';
+  return '/appointments';
+}
+
 class NotificationService {
   /**
-   * Create a new notification
+   * Create a new notification.
+   *
+   * Every in-app "bell" notification funnels through this method, so it is also
+   * the single place we fire the matching native push notification. The push is
+   * dispatched fire-and-forget AFTER the DB insert succeeds, so a push failure
+   * can never break bell creation. It is a no-op for users with no registered
+   * device token (e.g. web-only users) — `sendPushToUser` early-returns then,
+   * so the web app is completely unaffected by this.
    */
   async createNotification(data: NotificationData) {
-    console.log('Creating notification with data:', data);
-    
+    // Log only stable identifiers — title/message can contain doctor names,
+    // notes, and cancellation reasons (sensitive appointment context).
+    console.log('Creating notification', {
+      userId: data.userId,
+      appointmentId: data.appointmentId,
+      type: data.type,
+    });
+
     try {
       const result = await db.execute(sql`
         INSERT INTO notifications (user_id, appointment_id, title, message, type)
         VALUES (${data.userId}, ${data.appointmentId}, ${data.title}, ${data.message}, ${data.type})
         RETURNING *
       `);
-      
-      console.log('Notification created successfully:', result.rows[0]);
+
+      console.log('Notification created successfully', {
+        id: (result.rows[0] as any)?.id,
+        userId: data.userId,
+        type: data.type,
+      });
+
+      // Mirror the bell notification to a native push (fire-and-forget). Dynamic
+      // import mirrors the pattern in storage.ts and avoids firebase-admin
+      // init/load-order issues. Not awaited so it never blocks the response;
+      // sendPushToUser swallows its own errors internally.
+      import('../firebase-admin')
+        .then(({ sendPushToUser }) =>
+          sendPushToUser(data.userId, data.title, data.message, {
+            type: data.type,
+            appointmentId: String(data.appointmentId ?? ''),
+            route: routeForType(data.type),
+          })
+        )
+        .catch(err => console.error('Push mirror failed (bell still delivered):', err));
+
       return result.rows[0];
     } catch (error) {
       console.error('Error creating notification in database:', error);
@@ -124,6 +167,7 @@ class NotificationService {
     
     switch (status) {
       case "start":
+      case "in_progress": // routes.ts passes the raw 'in_progress' status — alias it to the start message so the bell (and its mirrored push) fire
         title = "Your appointment has started";
         message = `Your consultation with Dr. ${doctor.name} has begun. Please proceed to the doctor's room.`;
         break;

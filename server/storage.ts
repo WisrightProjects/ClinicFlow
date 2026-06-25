@@ -2156,40 +2156,45 @@ export class DatabaseStorage implements IStorage {
         throw new Error('Appointment not found');
       }
 
-      // Send push notification to patient on key status changes
-      // Guard: only notify if status actually changed (prevents duplicates on retries)
-      if (updated.patientId && previousStatus !== status && (status === 'in_progress' || status === 'completed')) {
-        const { sendPushToUser } = await import('./firebase-admin');
-        if (status === 'in_progress') {
-          sendPushToUser(
-            updated.patientId,
-            'Your turn has started',
-            `Token #${updated.tokenNumber} — please proceed to the consultation room.`,
-            { route: '/appointments' }
-          );
-        } else if (status === 'completed') {
-          // Notify the next waiting patient (any waiting status)
-          const nextPatient = await db
-            .select()
-            .from(appointments)
-            .where(
-              and(
-                eq(appointments.scheduleId, updated.scheduleId),
-                inArray(appointments.status, ['scheduled', 'token_started']),
-                gt(appointments.tokenNumber, updated.tokenNumber)
+      // Push to the NEXT waiting patient when a token completes.
+      // This is the one push with NO backing bell notification: notifyNextPatients
+      // (which createNotification — and now its mirrored push — rides on) fires only
+      // on 'in_progress', not on 'completed'. So this stays a bespoke push here.
+      // The former 'in_progress' -> "Your turn has started" push was removed: it is
+      // now covered centrally by the 'in_progress' status bell's mirrored push in
+      // notification.ts (generateStatusNotification), so keeping it here would
+      // double-notify the same patient.
+      // Do NOT gate on the completing appointment's patientId — walk-ins have a null
+      // patientId, but the next waiting patient (guarded below) may be a registered
+      // patient who should still be alerted.
+      if (previousStatus !== status && status === 'completed') {
+        // Notify the next waiting patient (any waiting status)
+        const nextPatient = await db
+          .select()
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.scheduleId, updated.scheduleId),
+              inArray(appointments.status, ['scheduled', 'token_started']),
+              gt(appointments.tokenNumber, updated.tokenNumber)
+            )
+          )
+          .orderBy(appointments.tokenNumber)
+          .limit(1);
+
+        if (nextPatient.length > 0 && nextPatient[0].patientId) {
+          // Fire-and-forget so an import/push failure can never fail the
+          // already-committed status update (mirrors createNotification).
+          import('./firebase-admin')
+            .then(({ sendPushToUser }) =>
+              sendPushToUser(
+                nextPatient[0].patientId!,
+                'Your turn is coming up',
+                `Token #${nextPatient[0].tokenNumber} — please be ready.`,
+                { route: '/appointments' }
               )
             )
-            .orderBy(appointments.tokenNumber)
-            .limit(1);
-
-          if (nextPatient.length > 0 && nextPatient[0].patientId) {
-            sendPushToUser(
-              nextPatient[0].patientId,
-              'Your turn is coming up',
-              `Token #${nextPatient[0].tokenNumber} — please be ready.`,
-              { route: '/appointments' }
-            );
-          }
+            .catch(err => console.error('Completed-token push failed:', err));
         }
       }
 
