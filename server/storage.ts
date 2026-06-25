@@ -2161,10 +2161,13 @@ export class DatabaseStorage implements IStorage {
       // (which createNotification — and now its mirrored push — rides on) fires only
       // on 'in_progress', not on 'completed'. So this stays a bespoke push here.
       // The former 'in_progress' -> "Your turn has started" push was removed: it is
-      // now covered centrally by the status_start bell's mirrored push in
-      // notification.ts, and keeping it here would double-notify the same patient.
-      if (updated.patientId && previousStatus !== status && status === 'completed') {
-        const { sendPushToUser } = await import('./firebase-admin');
+      // now covered centrally by the 'in_progress' status bell's mirrored push in
+      // notification.ts (generateStatusNotification), so keeping it here would
+      // double-notify the same patient.
+      // Do NOT gate on the completing appointment's patientId — walk-ins have a null
+      // patientId, but the next waiting patient (guarded below) may be a registered
+      // patient who should still be alerted.
+      if (previousStatus !== status && status === 'completed') {
         // Notify the next waiting patient (any waiting status)
         const nextPatient = await db
           .select()
@@ -2180,12 +2183,18 @@ export class DatabaseStorage implements IStorage {
           .limit(1);
 
         if (nextPatient.length > 0 && nextPatient[0].patientId) {
-          sendPushToUser(
-            nextPatient[0].patientId,
-            'Your turn is coming up',
-            `Token #${nextPatient[0].tokenNumber} — please be ready.`,
-            { route: '/appointments' }
-          );
+          // Fire-and-forget so an import/push failure can never fail the
+          // already-committed status update (mirrors createNotification).
+          import('./firebase-admin')
+            .then(({ sendPushToUser }) =>
+              sendPushToUser(
+                nextPatient[0].patientId!,
+                'Your turn is coming up',
+                `Token #${nextPatient[0].tokenNumber} — please be ready.`,
+                { route: '/appointments' }
+              )
+            )
+            .catch(err => console.error('Completed-token push failed:', err));
         }
       }
 

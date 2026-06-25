@@ -32,7 +32,13 @@ class NotificationService {
    * so the web app is completely unaffected by this.
    */
   async createNotification(data: NotificationData) {
-    console.log('Creating notification with data:', data);
+    // Log only stable identifiers — title/message can contain doctor names,
+    // notes, and cancellation reasons (sensitive appointment context).
+    console.log('Creating notification', {
+      userId: data.userId,
+      appointmentId: data.appointmentId,
+      type: data.type,
+    });
 
     try {
       const result = await db.execute(sql`
@@ -41,7 +47,11 @@ class NotificationService {
         RETURNING *
       `);
 
-      console.log('Notification created successfully:', result.rows[0]);
+      console.log('Notification created successfully', {
+        id: (result.rows[0] as any)?.id,
+        userId: data.userId,
+        type: data.type,
+      });
 
       // Mirror the bell notification to a native push (fire-and-forget). Dynamic
       // import mirrors the pattern in storage.ts and avoids firebase-admin
@@ -157,6 +167,7 @@ class NotificationService {
     
     switch (status) {
       case "start":
+      case "in_progress": // routes.ts passes the raw 'in_progress' status — alias it to the start message so the bell (and its mirrored push) fire
         title = "Your appointment has started";
         message = `Your consultation with Dr. ${doctor.name} has begun. Please proceed to the doctor's room.`;
         break;
