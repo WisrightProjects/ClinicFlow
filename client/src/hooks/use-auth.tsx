@@ -1,4 +1,4 @@
-import { createContext, ReactNode, useContext, useState } from "react";
+import { createContext, ReactNode, useContext, useState, useEffect, useRef } from "react";
 import {
   useQuery,
   useMutation,
@@ -36,6 +36,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryFn: getQueryFn({ on401: "returnNull" }),
   });
 
+  // Register the native FCM push token whenever the authenticated user changes.
+  // Done here (not in each login screen) so it covers every auth path — staff
+  // password, patient MPIN (which full-reloads to /home), and patient OTP. Keyed
+  // on the user id (not a one-shot flag) so that after a logout + login-as-a-
+  // different-user on the same device, the token is re-registered and reassigned
+  // to the new user rather than staying with the previous one. No-op on web.
+  const lastRegisteredUserId = useRef<number | null>(null);
+  useEffect(() => {
+    const currentUserId = user?.id ?? null;
+    if (currentUserId && lastRegisteredUserId.current !== currentUserId) {
+      lastRegisteredUserId.current = currentUserId;
+      registerFcmToken();
+    }
+  }, [user]);
+
   const clearPasswordReset = () => {
     setMustChangePassword(false);
   };
@@ -60,7 +75,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           title: "Login successful",
           description: `Welcome back, ${(data.user || data).name}!`,
         });
-        registerFcmToken();
+        // FCM token registration is handled centrally by the auth effect above,
+        // so it also covers patient MPIN/OTP logins — no per-path call needed.
       }
     },
     onError: (error: Error) => {
