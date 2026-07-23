@@ -151,7 +151,10 @@ export function WalletTransactions() {
         ) : (
           <div className="space-y-3">
             {transactions.map((transaction) => {
-              const amount = parseFloat(transaction.amount);
+              // Math.abs guards legacy rows: appointment payments used to be stored with a
+              // negative amount, which combined with the sign prefix below to render
+              // "-₹-21.00". New rows are positive; historical rows still need this.
+              const amount = Math.abs(parseFloat(transaction.amount));
               const isCredit = [
                 'refund_schedule_cancel',
                 'refund_doctor_absent', 

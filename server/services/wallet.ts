@@ -12,8 +12,9 @@ import {
   type InsertAppointmentRefund,
   type WalletTransactionType
 } from '@shared/schema';
-import { eq, and, sql, desc } from 'drizzle-orm';
+import { eq, and, sql, desc, notInArray } from 'drizzle-orm';
 import { notificationService } from './notification';
+import { paymentService } from './payment';
 
 export class WalletService {
   
@@ -53,9 +54,11 @@ export class WalletService {
     if (existingWallet) {
       return existingWallet;
     }
-    
-    // Create new wallet with ₹1000 starting balance for new patients
-    return this.createWallet(patientId, 1000);
+
+    // New wallets start empty. This used to seed ₹1000 of test credit, which would
+    // have become real spendable money once payments went live. Existing balances are
+    // left untouched — this only changes wallets created from now on.
+    return this.createWallet(patientId, 0);
   }
 
   /**
@@ -192,6 +195,53 @@ export class WalletService {
   }
 
   /**
+   * Marks every appointment still in a non-terminal state on a schedule as cancelled.
+   *
+   * The refund loops below only iterate refund-ELIGIBLE rows, and they are what sets
+   * status='cancel' for the schedule-cancel and doctor-left routes (unlike the
+   * completion and deletion routes, which cancel via storage). Anything the loops skip
+   * — walk-ins, unpaid rows, and now simulated online payments — would otherwise keep a
+   * live token on a schedule that no longer runs. Mirrors storage.completeSchedule.
+   *
+   * `excludeAppointmentIds` must carry any appointment whose refund FAILED. Marking
+   * those cancelled would hide an unrefunded patient — and in processPartialRefund it
+   * is unrecoverable, because that function's eligible query excludes status='cancel',
+   * so a retry would never pick the row up again. Leaving them untouched keeps a retry
+   * possible.
+   */
+  private async cancelRemainingAppointments(
+    scheduleId: number,
+    reason: string,
+    excludeAppointmentIds: number[] = []
+  ): Promise<number> {
+    try {
+      const conditions = [
+        eq(appointments.scheduleId, scheduleId),
+        // COALESCE because status is nullable: NULL NOT IN (...) is not true in
+        // Postgres, so a null-status row would silently escape the sweep.
+        sql`COALESCE(${appointments.status}, 'token_started') NOT IN ('completed', 'no_show', 'cancel', 'expired')`,
+      ];
+      if (excludeAppointmentIds.length > 0) {
+        conditions.push(notInArray(appointments.id, excludeAppointmentIds));
+      }
+
+      const cancelled = await db.update(appointments)
+        .set({ status: 'cancel', statusNotes: reason })
+        .where(and(...conditions))
+        .returning({ id: appointments.id });
+
+      if (cancelled.length > 0) {
+        console.log(`Cancelled ${cancelled.length} non-refunded appointment(s) on schedule ${scheduleId}`);
+      }
+      return cancelled.length;
+    } catch (error) {
+      // Never let this fail a refund run that already moved money.
+      console.error(`Error cancelling remaining appointments on schedule ${scheduleId}:`, error);
+      return 0;
+    }
+  }
+
+  /**
    * Process schedule cancellation refunds for all affected appointments
    */
   async processScheduleCancellationRefunds(
@@ -228,23 +278,37 @@ export class WalletService {
       console.log(`Found ${eligibleAppointments.length} eligible appointments for refund`);
       
       if (eligibleAppointments.length === 0) {
+        // Still terminate anything left on the schedule (walk-ins, unpaid, online).
+        await this.cancelRemainingAppointments(scheduleId, cancelReason);
         return {
           refundedAppointments: 0,
           totalRefundAmount: 0,
           refundDetails: []
         };
       }
-      
+
       let totalRefundAmount = 0;
       const refundDetails: any[] = [];
-      
+      // Appointments whose refund threw. Excluded from the cleanup sweep below so a
+      // retry can still find them.
+      const failedRefundIds: number[] = [];
+
       // Process each appointment refund
       for (const { appointment, doctorName } of eligibleAppointments) {
         if (!appointment.patientId) continue; // Skip walk-in appointments
-        
+
         const consultationFee = parseFloat(appointment.consultationFee);
-        
+
         try {
+          // Never refund a simulated payment — no money was collected, so crediting the
+          // wallet would create real spendable balance out of nothing. Kept inside the
+          // try so a transient lookup failure skips one appointment rather than
+          // aborting the whole batch and leaving later patients unrefunded.
+          if (await paymentService.isSimulatedPayment(appointment.id)) {
+            console.log(`Skipping refund for appointment ${appointment.id}: simulated payment`);
+            continue;
+          }
+
           // Create wallet transaction for refund
           const walletTransaction = await this.processTransaction({
             patientId: appointment.patientId,
@@ -310,17 +374,21 @@ export class WalletService {
           
         } catch (error) {
           console.error(`Error processing refund for appointment ${appointment.id}:`, error);
+          failedRefundIds.push(appointment.id);
         }
       }
-      
+
       console.log(`Successfully processed ${refundDetails.length} refunds totaling ₹${totalRefundAmount}`);
-      
+
+      // Terminate whatever the refund loop skipped so no live token outlives the schedule.
+      await this.cancelRemainingAppointments(scheduleId, cancelReason, failedRefundIds);
+
       return {
         refundedAppointments: refundDetails.length,
         totalRefundAmount,
         refundDetails
       };
-      
+
     } catch (error) {
       console.error('Error processing schedule cancellation refunds:', error);
       throw error;
@@ -347,6 +415,13 @@ export class WalletService {
 
     // Only refund if eligible, paid, and not already refunded
     if (!appointment.isRefundEligible || !appointment.isPaid || appointment.hasBeenRefunded || !appointment.patientId) {
+      return { refunded: false, refundAmount: 0 };
+    }
+
+    // A simulated payment collected no money. Crediting the wallet for one would create
+    // real, spendable balance out of nothing (book free online -> cancel -> get credit).
+    if (await paymentService.isSimulatedPayment(appointment.id)) {
+      console.log(`Skipping refund for appointment ${appointment.id}: simulated payment, no funds collected`);
       return { refunded: false, refundAmount: 0 };
     }
 
@@ -435,23 +510,38 @@ export class WalletService {
       console.log(`Found ${eligibleAppointments.length} eligible appointments for partial refund`);
       
       if (eligibleAppointments.length === 0) {
+        // Still terminate anything left on the schedule (walk-ins, unpaid, online).
+        await this.cancelRemainingAppointments(scheduleId, cancelReason);
         return {
           refundedAppointments: 0,
           totalRefundAmount: 0,
           refundDetails: []
         };
       }
-      
+
       let totalRefundAmount = 0;
       const refundDetails: any[] = [];
-      
+      // Appointments whose refund threw. Excluded from the cleanup sweep below — this
+      // function's eligible query excludes status='cancel', so sweeping a failed refund
+      // would make it permanently unrecoverable.
+      const failedRefundIds: number[] = [];
+
       // Process each appointment refund
       for (const { appointment, doctorName } of eligibleAppointments) {
         if (!appointment.patientId) continue; // Skip walk-in appointments
-        
+
         const consultationFee = parseFloat(appointment.consultationFee);
-        
+
         try {
+          // Never refund a simulated payment — no money was collected, so crediting the
+          // wallet would create real spendable balance out of nothing. Kept inside the
+          // try so a transient lookup failure skips one appointment rather than
+          // aborting the whole batch and leaving later patients unrefunded.
+          if (await paymentService.isSimulatedPayment(appointment.id)) {
+            console.log(`Skipping refund for appointment ${appointment.id}: simulated payment`);
+            continue;
+          }
+
           // Create wallet transaction for refund
           const walletTransaction = await this.processTransaction({
             patientId: appointment.patientId,
@@ -518,17 +608,21 @@ export class WalletService {
           
         } catch (error) {
           console.error(`Error processing partial refund for appointment ${appointment.id}:`, error);
+          failedRefundIds.push(appointment.id);
         }
       }
-      
+
       console.log(`Successfully processed ${refundDetails.length} partial refunds totaling ₹${totalRefundAmount}`);
-      
+
+      // Terminate whatever the refund loop skipped so no live token outlives the session.
+      await this.cancelRemainingAppointments(scheduleId, cancelReason, failedRefundIds);
+
       return {
         refundedAppointments: refundDetails.length,
         totalRefundAmount,
         refundDetails
       };
-      
+
     } catch (error) {
       console.error('Error processing partial refunds:', error);
       throw error;

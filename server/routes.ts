@@ -9,6 +9,7 @@ import { z } from "zod";
 import { notificationService } from './services/notification';
 import { ETAService } from './services/eta';
 import { walletService } from './services/wallet';
+import { paymentService } from './services/payment';
 import { isScheduleEnded, userCanResolveSchedule, resolveEndedScheduleTokens } from './services/schedule-resolution';
 import { db } from './db';
 import { eq, and, sql, isNull, not, gte } from 'drizzle-orm';
@@ -627,18 +628,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Calculate platform fee + GST
-      const platformFee = 20.00; // ₹20 platform fee
-      const gstRate = 0.05; // 5% GST
-      const gstAmount = platformFee * gstRate; // ₹1
-      const totalAmount = platformFee + gstAmount; // ₹21 total
+      // Fee is computed server-side from the shared pricing module; any amount sent
+      // by the client is ignored.
+      const fee = paymentService.getBookingFee();
+      const { platformFee, gstAmount, total: totalAmount } = fee;
 
-      // Check if patient has sufficient wallet balance
-      const patientWallet = await storage.getPatientWallet(req.user.id);
-      if (!patientWallet || parseFloat(patientWallet.balance) < totalAmount) {
-        return res.status(400).json({ 
-          message: `Insufficient wallet balance. Required: ₹${totalAmount}, Available: ₹${patientWallet?.balance || 0}` 
+      const paymentMethod = paymentService.normalizePaymentMethod(req.body.paymentMethod);
+
+      if (paymentMethod === 'online' && !paymentService.isOnlinePaymentEnabled()) {
+        return res.status(400).json({
+          message: 'Online payment is currently unavailable. Please pay using your wallet.'
         });
+      }
+
+      // Wallet bookings need funds. This is an early bail-out for a friendly message —
+      // the authoritative check runs under a row lock inside the booking transaction.
+      if (paymentMethod === 'wallet') {
+        const patientWallet = await storage.getPatientWallet(req.user.id);
+        if (!patientWallet || parseFloat(patientWallet.balance) < totalAmount) {
+          return res.status(400).json({
+            message: `Insufficient wallet balance. Required: ₹${totalAmount.toFixed(2)}, Available: ₹${patientWallet?.balance || 0}`
+          });
+        }
       }
 
       // Validate on-behalf fields when booking for someone else
@@ -660,21 +671,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
         scheduleId: schedule.id,
         consultationFee: totalAmount, // Store total amount as consultation fee
         isPaid: true,
-        paymentMethod: 'wallet',
-        isRefundEligible: true,
+        paymentMethod,
+        // Simulated online payments collected nothing, so there is nothing to refund.
+        // Stays correct in Phase 2: once a real gateway is live, online becomes
+        // refundable. walletService re-checks via paymentService.isSimulatedPayment.
+        isRefundEligible: paymentService.isRefundableMethod(paymentMethod),
         isOnBehalf: req.body.isOnBehalf || false,
         guestName: req.body.isOnBehalf ? req.body.guestName?.trim() : null,
         guestPhone: req.body.isOnBehalf ? req.body.guestPhone?.trim() : null,
       };
 
-      // Create appointment and process wallet payment
-      const appointment = await storage.createAppointmentWithWalletPayment(
-        appointmentData, 
-        platformFee, 
-        gstAmount, 
-        totalAmount
-      );
-      
+      // Create the appointment and settle payment
+      let appointment;
+      if (paymentMethod === 'online') {
+        // Simulated gateway — books the token without touching the wallet at all.
+        const result = await paymentService.createOnlineBooking(appointmentData, fee);
+        appointment = result.appointment;
+      } else {
+        appointment = await storage.createAppointmentWithWalletPayment(
+          appointmentData,
+          platformFee,
+          gstAmount,
+          totalAmount
+        );
+        // Bookkeeping only — the money already moved, so a failure here must not
+        // fail the booking. Refunds fall back to the appointment's paymentMethod.
+        try {
+          await paymentService.recordWalletPayment(appointment, fee);
+        } catch (paymentRecordError) {
+          console.error('Failed to record wallet payment row:', paymentRecordError);
+        }
+      }
+
       // Calculate initial ETA for the appointment
       try {
         const eta = await ETAService.calculateInitialETA(
@@ -690,11 +718,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error('Error calculating initial ETA:', etaError);
       }
       
-      res.status(201).json({ ...appointment, etaStage: 1 });
+      res.status(201).json({
+        ...appointment,
+        etaStage: 1,
+        payment: { method: paymentMethod, ...fee },
+      });
     } catch (error) {
       console.error('Error creating appointment:', error);
+      // Surface the user-actionable failures the booking transaction can raise
+      // (balance race, duplicate booking, token limit) instead of a blanket 500.
+      const message = error instanceof Error ? error.message : '';
+      if (/insufficient wallet balance|already have an appointment|maximum number of tokens/i.test(message)) {
+        return res.status(400).json({ message });
+      }
       res.status(500).json({ message: 'Failed to create appointment' });
     }
+  });
+
+  // Booking fee breakdown for the payment screen. Patients must never compute or
+  // send this amount themselves.
+  app.get("/api/booking/fee", async (req, res) => {
+    if (!req.user) return res.sendStatus(401);
+    res.json({
+      ...paymentService.getBookingFee(),
+      onlinePaymentEnabled: paymentService.isOnlinePaymentEnabled(),
+    });
   });
 
 

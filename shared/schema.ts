@@ -268,6 +268,32 @@ export const walletTransactions = pgTable("wallet_transactions", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
 });
 
+// Payment attempts — one row per booking payment, whatever the method.
+// `gateway` is what separates a real payment from a simulated one: rows with
+// gateway = 'dummy' took no money and must never be refunded to the wallet.
+export const payments = pgTable("payments", {
+  id: serial("id").primaryKey(),
+  appointmentId: integer("appointment_id").references(() => appointments.id),
+  patientId: integer("patient_id").notNull().references(() => users.id),
+  scheduleId: integer("schedule_id").references(() => doctorSchedules.id),
+  method: varchar("method", { length: 20 }).notNull(),          // wallet | online
+  gateway: varchar("gateway", { length: 30 }).notNull(),        // wallet | dummy | razorpay
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  platformFee: decimal("platform_fee", { precision: 10, scale: 2 }).notNull(),
+  gstAmount: decimal("gst_amount", { precision: 10, scale: 2 }).notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("created"), // created | success | failed
+  // Populated by a real gateway in Phase 2; unique so a replayed webhook cannot
+  // be processed twice. Null for wallet and dummy payments.
+  gatewayPaymentId: varchar("gateway_payment_id", { length: 100 }).unique(),
+  walletTransactionId: integer("wallet_transaction_id").references(() => walletTransactions.id),
+  metadata: text("metadata"), // JSON
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  patientIdx: index("payments_patient_idx").on(table.patientId),
+  appointmentIdx: index("payments_appointment_idx").on(table.appointmentId),
+}));
+
 // Refund Tracking for Appointments
 export const appointmentRefunds = pgTable("appointment_refunds", {
   id: serial("id").primaryKey(),
@@ -569,6 +595,10 @@ export type InsertAppointmentRefund = z.infer<typeof insertAppointmentRefundSche
 
 export type TokenReservation = typeof tokenReservations.$inferSelect;
 export type InsertTokenReservation = typeof tokenReservations.$inferInsert;
+
+// Payment Types
+export type Payment = typeof payments.$inferSelect;
+export type InsertPayment = typeof payments.$inferInsert;
 
 export const specialties = [
   "Cardiologist",
