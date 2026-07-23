@@ -165,7 +165,8 @@ export function CompactWallet() {
               ) : (
                 <div className="space-y-2 max-h-32 overflow-y-auto">
                   {walletSummary?.recentTransactions.slice(0, 3).map((transaction) => {
-                    const amount = parseFloat(transaction.amount);
+                    // Math.abs guards legacy appointment_payment rows stored negative
+                    const amount = Math.abs(parseFloat(transaction.amount));
                     const isCredit = [
                       'refund_schedule_cancel',
                       'refund_doctor_absent', 
@@ -253,7 +254,8 @@ export function CompactWallet() {
             ) : (
               <div className="space-y-3">
                 {walletSummary?.recentTransactions.map((transaction) => {
-                  const amount = parseFloat(transaction.amount);
+                  // Math.abs guards legacy appointment_payment rows stored negative
+                  const amount = Math.abs(parseFloat(transaction.amount));
                   const isCredit = [
                     'refund_schedule_cancel',
                     'refund_doctor_absent', 

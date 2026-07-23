@@ -14,6 +14,7 @@ import {
 } from '@shared/schema';
 import { eq, and, sql, desc } from 'drizzle-orm';
 import { notificationService } from './notification';
+import { paymentService } from './payment';
 
 export class WalletService {
   
@@ -53,9 +54,11 @@ export class WalletService {
     if (existingWallet) {
       return existingWallet;
     }
-    
-    // Create new wallet with ₹1000 starting balance for new patients
-    return this.createWallet(patientId, 1000);
+
+    // New wallets start empty. This used to seed ₹1000 of test credit, which would
+    // have become real spendable money once payments went live. Existing balances are
+    // left untouched — this only changes wallets created from now on.
+    return this.createWallet(patientId, 0);
   }
 
   /**
@@ -241,7 +244,14 @@ export class WalletService {
       // Process each appointment refund
       for (const { appointment, doctorName } of eligibleAppointments) {
         if (!appointment.patientId) continue; // Skip walk-in appointments
-        
+
+        // Never refund a simulated payment — no money was collected, so crediting the
+        // wallet would create real spendable balance out of nothing.
+        if (await paymentService.isSimulatedPayment(appointment.id)) {
+          console.log(`Skipping refund for appointment ${appointment.id}: simulated payment`);
+          continue;
+        }
+
         const consultationFee = parseFloat(appointment.consultationFee);
         
         try {
@@ -350,6 +360,13 @@ export class WalletService {
       return { refunded: false, refundAmount: 0 };
     }
 
+    // A simulated payment collected no money. Crediting the wallet for one would create
+    // real, spendable balance out of nothing (book free online -> cancel -> get credit).
+    if (await paymentService.isSimulatedPayment(appointment.id)) {
+      console.log(`Skipping refund for appointment ${appointment.id}: simulated payment, no funds collected`);
+      return { refunded: false, refundAmount: 0 };
+    }
+
     const consultationFee = parseFloat(appointment.consultationFee);
 
     const walletTransaction = await this.processTransaction({
@@ -448,7 +465,14 @@ export class WalletService {
       // Process each appointment refund
       for (const { appointment, doctorName } of eligibleAppointments) {
         if (!appointment.patientId) continue; // Skip walk-in appointments
-        
+
+        // Never refund a simulated payment — no money was collected, so crediting the
+        // wallet would create real spendable balance out of nothing.
+        if (await paymentService.isSimulatedPayment(appointment.id)) {
+          console.log(`Skipping refund for appointment ${appointment.id}: simulated payment`);
+          continue;
+        }
+
         const consultationFee = parseFloat(appointment.consultationFee);
         
         try {

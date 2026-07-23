@@ -44,6 +44,12 @@ import { Pool } from '@neondatabase/serverless';
 import { pool } from "./db";
 import { number } from "zod";
 
+/**
+ * Either the root db handle or a transaction handle from db.transaction().
+ * Lets a query builder run inside a caller's transaction so it rolls back with it.
+ */
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 const pgSession = connectPg(session);
 
 const sessionStore = new pgSession({
@@ -1743,7 +1749,15 @@ export class DatabaseStorage implements IStorage {
     return nextToken;
   }
 
-  async createAppointment(appointment: Omit<Appointment, "id"> & { tokenNumber?: number }): Promise<Appointment> {
+  /**
+   * Creates an appointment. Pass `tx` when the caller is already inside a
+   * db.transaction() so the insert participates in that transaction — otherwise the
+   * row is committed independently and survives a rollback of the caller's work.
+   */
+  async createAppointment(
+    appointment: Omit<Appointment, "id"> & { tokenNumber?: number },
+    tx: DbExecutor = db
+  ): Promise<Appointment> {
     // Use the provided clinicId or get it from the doctor
     let clinicId = appointment.clinicId;
     
@@ -1760,7 +1774,7 @@ export class DatabaseStorage implements IStorage {
     const appointmentDate = new Date(appointment.date);    
     
     // Get the doctor's schedule for this day and clinic
-    const [schedule] = await db
+    const [schedule] = await tx
       .select()
       .from(doctorSchedules)
       .where(
@@ -1777,7 +1791,7 @@ export class DatabaseStorage implements IStorage {
     }
     
     // Check for duplicate booking - same patient, doctor, and schedule
-    const existingAppointment = await db
+    const existingAppointment = await tx
       .select()
       .from(appointments)
       .where(
@@ -1797,7 +1811,7 @@ export class DatabaseStorage implements IStorage {
     
     // Get current token count — exclude cancelled appointments so cancellations
     // don't eat into the doctor's capacity (only attended patients count)
-    const [tokenCount] = await db
+    const [tokenCount] = await tx
       .select({
         count: count(),
       })
@@ -1824,7 +1838,7 @@ export class DatabaseStorage implements IStorage {
       clinicId,
       schedule.id
     );
-    const [reservationConflict] = await db
+    const [reservationConflict] = await tx
       .select({ tokenNumber: tokenReservations.tokenNumber })
       .from(tokenReservations)
       .where(and(
@@ -1835,7 +1849,7 @@ export class DatabaseStorage implements IStorage {
       ));
     if (reservationConflict) {
       // A reservation was created between our getNextTokenNumber call and now — skip past it
-      const [maxResult] = await db.select({ maxToken: max(tokenReservations.tokenNumber) })
+      const [maxResult] = await tx.select({ maxToken: max(tokenReservations.tokenNumber) })
         .from(tokenReservations)
         .where(and(
           eq(tokenReservations.scheduleId, schedule.id),
@@ -1845,7 +1859,7 @@ export class DatabaseStorage implements IStorage {
       tokenNumber = (maxResult?.maxToken || tokenNumber) + 1;
     }
 
-    const [created] = await db
+    const [created] = await tx
       .insert(appointments)
       .values({
         ...appointment,
@@ -1866,29 +1880,39 @@ export class DatabaseStorage implements IStorage {
   ): Promise<Appointment> {
     // Use transaction to ensure data consistency
     return await db.transaction(async (tx) => {
-      // Create the appointment first
-      const createdAppointment = await this.createAppointment(appointment);
-      
-      // Get or create patient wallet
-      let [wallet] = await tx
+      // Lock the wallet row FIRST so two concurrent bookings (e.g. a double-tap on
+      // "Book Token") cannot both read the same balance and both debit it. The route's
+      // pre-check is outside this transaction and is therefore only an early bail-out —
+      // this re-check inside the lock is the authoritative one.
+      const [wallet] = await tx
         .select()
         .from(patientWallets)
-        .where(eq(patientWallets.patientId, appointment.patientId));
-      
+        .where(eq(patientWallets.patientId, appointment.patientId))
+        .for('update');
+
       if (!wallet) {
         throw new Error('Patient wallet not found');
       }
-      
+
       const currentBalance = parseFloat(wallet.balance);
+      if (currentBalance < totalAmount) {
+        throw new Error('Insufficient wallet balance');
+      }
+
+      // Pass `tx` so the appointment insert rolls back with the wallet debit. Without it
+      // the appointment was committed on the root connection and survived a failure here,
+      // leaving an unpaid token in the queue.
+      const createdAppointment = await this.createAppointment(appointment, tx);
+
       const newBalance = currentBalance - totalAmount;
       const newTotalSpent = parseFloat(wallet.totalSpent) + totalAmount;
-      
+
       // Update wallet balance
       await tx
         .update(patientWallets)
         .set({
-          balance: newBalance.toString(),
-          totalSpent: newTotalSpent.toString(),
+          balance: newBalance.toFixed(2),
+          totalSpent: newTotalSpent.toFixed(2),
           updatedAt: new Date()
         })
         .where(eq(patientWallets.patientId, appointment.patientId));
@@ -1902,9 +1926,12 @@ export class DatabaseStorage implements IStorage {
           appointmentId: createdAppointment.id,
           scheduleId: appointment.scheduleId,
           transactionType: 'appointment_payment',
-          amount: (-totalAmount).toString(), // Negative for deduction
-          previousBalance: currentBalance.toString(),
-          newBalance: newBalance.toString(),
+          // Stored POSITIVE, matching walletService.processTransaction. The sign is a
+          // presentation concern — the UI derives it from transactionType. Storing this
+          // one negative made the history render "-₹-21.00".
+          amount: totalAmount.toFixed(2),
+          previousBalance: currentBalance.toFixed(2),
+          newBalance: newBalance.toFixed(2),
           description: `Platform fee (₹${platformFee}) + GST (₹${gstAmount.toFixed(2)}) for appointment booking`,
           status: 'completed',
           metadata: JSON.stringify({
