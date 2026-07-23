@@ -11,6 +11,8 @@
     "check": "tsc",
     "db:push": "drizzle-kit push",
     "db:migrate": "tsx migrations/run.ts",
+    "db:migrate:prod": "node migrations/run.js",
+    "db:baseline": "node migrations/run.js --baseline",
     "db:generate": "drizzle-kit generate",
     "reset-password": "tsx scripts/reset-password.ts",
     "create-attender": "tsx scripts/create-attender.ts",
