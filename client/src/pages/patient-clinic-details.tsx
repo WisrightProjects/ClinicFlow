@@ -24,6 +24,9 @@ import { useAuth } from "@/hooks/use-auth";
 import { invalidateWalletQueries } from "@/utils/wallet-utils";
 import { NavigationButtons } from "@/components/navigation-buttons";
 import { NavHeader } from "@/components/nav-header";
+import { PaymentOptions } from "@/components/booking/payment-options";
+import { DummyPaymentScreen, type DummyPaymentStatus } from "@/components/booking/dummy-payment-screen";
+import type { BookingFee, PaymentMethod } from "@shared/pricing";
 import axios from "axios";
 import React from "react";
 
@@ -67,7 +70,43 @@ export default function PatientClinicDetails() {
   const [isOnBehalf, setIsOnBehalf] = useState(false);
   const [beneficiaryName, setBeneficiaryName] = useState("");
   const [beneficiaryPhone, setBeneficiaryPhone] = useState("");
-  
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("wallet");
+  // Tracks whether the patient picked a method themselves, so the auto-default below
+  // never overrides a deliberate choice.
+  const [paymentMethodTouched, setPaymentMethodTouched] = useState(false);
+  const [showPaymentScreen, setShowPaymentScreen] = useState(false);
+  const [paymentStatus, setPaymentStatus] = useState<DummyPaymentStatus>("processing");
+  const [paymentError, setPaymentError] = useState("");
+
+  // Booking fee is computed by the server; the client only displays it.
+  const { data: feeData, isLoading: isLoadingFee } = useQuery<
+    BookingFee & { onlinePaymentEnabled: boolean }
+  >({
+    queryKey: ["/api/booking/fee"],
+    enabled: !!user,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: walletSummary } = useQuery<{ wallet: { balance: string } }>({
+    queryKey: ["/api/wallet/summary"],
+    enabled: !!user,
+  });
+
+  const walletBalance = parseFloat(walletSummary?.wallet?.balance ?? "0");
+  const bookingTotal = feeData?.total ?? 0;
+  const onlinePaymentEnabled = feeData?.onlinePaymentEnabled ?? false;
+  const canPayFromWallet = !!feeData && walletBalance >= bookingTotal;
+
+  // The dialog can open before the fee/wallet queries resolve, when canPayFromWallet is
+  // still false — which would leave "Online" selected even for a patient with enough
+  // balance. Re-apply the default once the data lands, unless they have chosen already.
+  useEffect(() => {
+    if (showBookingDialog && feeData && !paymentMethodTouched) {
+      setPaymentMethod(canPayFromWallet ? "wallet" : "online");
+    }
+  }, [showBookingDialog, feeData, canPayFromWallet, paymentMethodTouched]);
+
+
   // Auto-select doctor from URL parameter when doctors data loads
   useEffect(() => {
     if (doctorIdFromUrl && doctors.length > 0 && !selectedDoctor) {
@@ -108,9 +147,15 @@ export default function PatientClinicDetails() {
   
   // Booking mutation for appointment creation
   const bookingMutation = useMutation({
-    mutationFn: async (appointmentData: { doctorId: number; clinicId: number; scheduleId: number; date: string; time: string; isOnBehalf?: boolean; guestName?: string; guestPhone?: string }) => {
+    mutationFn: async (appointmentData: { doctorId: number; clinicId: number; scheduleId: number; date: string; time: string; isOnBehalf?: boolean; guestName?: string; guestPhone?: string; method: PaymentMethod }) => {
       if (!user) {
         throw new Error("You must be logged in to book an appointment");
+      }
+
+      // Give the simulated gateway a moment so it reads like a real payment rather
+      // than an instant jump. Purely cosmetic — remove once the real gateway lands.
+      if (appointmentData.method === "online") {
+        await new Promise((resolve) => setTimeout(resolve, 1600));
       }
 
       // Create a new date object for the selected date and time
@@ -161,6 +206,8 @@ export default function PatientClinicDetails() {
           isOnBehalf: appointmentData.isOnBehalf || false,
           guestName: appointmentData.guestName || null,
           guestPhone: appointmentData.guestPhone || null,
+          // The amount is never sent — the server computes and charges it.
+          paymentMethod: appointmentData.method,
         })
       });
       
@@ -175,6 +222,7 @@ export default function PatientClinicDetails() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/booking/fee"] });
       // Also invalidate the schedules data for attenders
       queryClient.invalidateQueries({ queryKey: ["schedulesToday"] });
       queryClient.invalidateQueries({ queryKey: ["attender"] });
@@ -182,16 +230,41 @@ export default function PatientClinicDetails() {
       queryClient.invalidateQueries({ queryKey: ["user-appointments", selectedDoctor] });
       // Invalidate wallet queries to refresh wallet balance
       invalidateWalletQueries(queryClient);
-      toast({
-        title: "Appointment Booked Successfully! ✅",
-        description: "Your appointment has been confirmed. You cannot book another appointment for the same schedule.",
-      });
-      navigate("/appointments");
+
+      const finish = () => {
+        toast({
+          title: "Token Booked Successfully! ✅",
+          description: "Your appointment has been confirmed. You cannot book another appointment for the same schedule.",
+        });
+        navigate("/appointments");
+      };
+
+      // Online: hold on "Payment Successful" briefly so the confirmation reads as a
+      // sequence (paid -> booked) rather than both flashing at once.
+      if (showPaymentScreen) {
+        setPaymentStatus("success");
+        setTimeout(() => {
+          setShowPaymentScreen(false);
+          finish();
+        }, 1200);
+      } else {
+        finish();
+      }
     },
     onError: (error: Error) => {
+      const message = error.message || "Failed to book appointment. Please try again.";
+
+      // Surface the failure inside the payment screen instead of behind it, so the
+      // patient never sees "Payment Successful" for a booking that did not happen.
+      if (showPaymentScreen) {
+        setPaymentError(message);
+        setPaymentStatus("failed");
+        return;
+      }
+
       toast({
         title: "Error",
-        description: error.message || "Failed to book appointment. Please try again.",
+        description: message,
         variant: "destructive",
       });
     },
@@ -371,6 +444,10 @@ export default function PatientClinicDetails() {
       setIsOnBehalf(false);
       setBeneficiaryName("");
       setBeneficiaryPhone("");
+      // Default to whichever method the patient can actually use. If the fee/wallet
+      // queries are still loading, the effect above corrects this once they resolve.
+      setPaymentMethod(canPayFromWallet ? "wallet" : "online");
+      setPaymentMethodTouched(false);
       setShowBookingDialog(true);
     } catch (error) {
       toast({
@@ -393,12 +470,29 @@ export default function PatientClinicDetails() {
         return;
       }
     }
+    if (paymentMethod === "wallet" && !canPayFromWallet) {
+      toast({ title: "Insufficient wallet balance", description: "Please pay online instead.", variant: "destructive" });
+      return;
+    }
+    if (paymentMethod === "online" && !onlinePaymentEnabled) {
+      toast({ title: "Online payment unavailable", description: "Please pay using your wallet.", variant: "destructive" });
+      return;
+    }
+
     setShowBookingDialog(false);
+
+    if (paymentMethod === "online") {
+      setPaymentError("");
+      setPaymentStatus("processing");
+      setShowPaymentScreen(true);
+    }
+
     bookingMutation.mutate({
       ...pendingBookingData,
       isOnBehalf,
       guestName: isOnBehalf ? beneficiaryName.trim() : undefined,
       guestPhone: isOnBehalf ? beneficiaryPhone.trim() : undefined,
+      method: paymentMethod,
     });
   };
 
@@ -918,13 +1012,13 @@ export default function PatientClinicDetails() {
       <Dialog open={showBookingDialog} onOpenChange={(open) => { if (!open) setShowBookingDialog(false); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm Appointment</DialogTitle>
+            <DialogTitle>Confirm &amp; Pay</DialogTitle>
             <DialogDescription>
-              ₹21 will be deducted from your wallet.
+              Choose how you would like to pay for this booking.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-2">
+          <div className="space-y-4 py-2 max-h-[65vh] overflow-y-auto">
             <div className="flex items-center gap-3">
               <Checkbox
                 id="onBehalf"
@@ -960,23 +1054,46 @@ export default function PatientClinicDetails() {
                 </div>
               </div>
             )}
+
+            <PaymentOptions
+              fee={feeData}
+              isLoadingFee={isLoadingFee}
+              walletBalance={walletBalance}
+              onlineEnabled={onlinePaymentEnabled}
+              value={paymentMethod}
+              onChange={(method) => {
+                setPaymentMethodTouched(true);
+                setPaymentMethod(method);
+              }}
+            />
           </div>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowBookingDialog(false)}>
               Cancel
             </Button>
-            <Button onClick={confirmBooking} disabled={bookingMutation.isPending}>
+            <Button
+              onClick={confirmBooking}
+              disabled={bookingMutation.isPending || isLoadingFee || !feeData}
+            >
               {bookingMutation.isPending ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
                 <Calendar className="mr-2 h-4 w-4" />
               )}
-              Confirm Booking
+              {bookingMutation.isPending ? "Booking..." : `Pay ₹${bookingTotal.toFixed(2)}`}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <DummyPaymentScreen
+        open={showPaymentScreen}
+        amount={bookingTotal}
+        status={paymentStatus}
+        errorMessage={paymentError}
+        onClose={() => setShowPaymentScreen(false)}
+      />
     </div>
   );
 }
