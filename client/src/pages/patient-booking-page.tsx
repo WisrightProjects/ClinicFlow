@@ -84,6 +84,9 @@ export default function PatientBookingPage() {
   const [beneficiaryName, setBeneficiaryName] = useState("");
   const [beneficiaryPhone, setBeneficiaryPhone] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("wallet");
+  // Tracks whether the patient picked a method themselves, so the auto-default below
+  // never overrides a deliberate choice.
+  const [paymentMethodTouched, setPaymentMethodTouched] = useState(false);
   const [showPaymentScreen, setShowPaymentScreen] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState<DummyPaymentStatus>("processing");
   const [paymentError, setPaymentError] = useState<string>("");
@@ -106,6 +109,15 @@ export default function PatientBookingPage() {
   const bookingTotal = feeData?.total ?? 0;
   const onlinePaymentEnabled = feeData?.onlinePaymentEnabled ?? false;
   const canPayFromWallet = !!feeData && walletBalance >= bookingTotal;
+
+  // The dialog can open before the fee/wallet queries resolve, when canPayFromWallet is
+  // still false — which would leave "Online" selected even for a patient with enough
+  // balance. Re-apply the default once the data lands, unless they have chosen already.
+  useEffect(() => {
+    if (showBookingDialog && feeData && !paymentMethodTouched) {
+      setPaymentMethod(canPayFromWallet ? "wallet" : "online");
+    }
+  }, [showBookingDialog, feeData, canPayFromWallet, paymentMethodTouched]);
 
   const { data: doctor, isLoading: isLoadingDoctor } = useQuery<User>({
     queryKey: [`/api/doctors/${doctorId}`],
@@ -254,8 +266,10 @@ export default function PatientBookingPage() {
     setIsOnBehalf(false);
     setBeneficiaryName("");
     setBeneficiaryPhone("");
-    // Default to whichever method the patient can actually use.
+    // Default to whichever method the patient can actually use. If the fee/wallet
+    // queries are still loading, the effect above corrects this once they resolve.
     setPaymentMethod(canPayFromWallet ? "wallet" : "online");
+    setPaymentMethodTouched(false);
     setShowBookingDialog(true);
   };
 
@@ -564,7 +578,10 @@ export default function PatientBookingPage() {
               walletBalance={walletBalance}
               onlineEnabled={onlinePaymentEnabled}
               value={paymentMethod}
-              onChange={setPaymentMethod}
+              onChange={(method) => {
+                setPaymentMethodTouched(true);
+                setPaymentMethod(method);
+              }}
             />
           </div>
           <DialogFooter>

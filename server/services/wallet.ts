@@ -195,6 +195,36 @@ export class WalletService {
   }
 
   /**
+   * Marks every appointment still in a non-terminal state on a schedule as cancelled.
+   *
+   * The refund loops below only iterate refund-ELIGIBLE rows, and they are what sets
+   * status='cancel' for the schedule-cancel and doctor-left routes (unlike the
+   * completion and deletion routes, which cancel via storage). Anything the loops skip
+   * — walk-ins, unpaid rows, and now simulated online payments — would otherwise keep a
+   * live token on a schedule that no longer runs. Mirrors storage.completeSchedule.
+   */
+  private async cancelRemainingAppointments(scheduleId: number, reason: string): Promise<number> {
+    try {
+      const cancelled = await db.update(appointments)
+        .set({ status: 'cancel', statusNotes: reason })
+        .where(and(
+          eq(appointments.scheduleId, scheduleId),
+          sql`${appointments.status} NOT IN ('completed', 'no_show', 'cancel', 'expired')`
+        ))
+        .returning({ id: appointments.id });
+
+      if (cancelled.length > 0) {
+        console.log(`Cancelled ${cancelled.length} non-refunded appointment(s) on schedule ${scheduleId}`);
+      }
+      return cancelled.length;
+    } catch (error) {
+      // Never let this fail a refund run that already moved money.
+      console.error(`Error cancelling remaining appointments on schedule ${scheduleId}:`, error);
+      return 0;
+    }
+  }
+
+  /**
    * Process schedule cancellation refunds for all affected appointments
    */
   async processScheduleCancellationRefunds(
@@ -231,30 +261,34 @@ export class WalletService {
       console.log(`Found ${eligibleAppointments.length} eligible appointments for refund`);
       
       if (eligibleAppointments.length === 0) {
+        // Still terminate anything left on the schedule (walk-ins, unpaid, online).
+        await this.cancelRemainingAppointments(scheduleId, cancelReason);
         return {
           refundedAppointments: 0,
           totalRefundAmount: 0,
           refundDetails: []
         };
       }
-      
+
       let totalRefundAmount = 0;
       const refundDetails: any[] = [];
-      
+
       // Process each appointment refund
       for (const { appointment, doctorName } of eligibleAppointments) {
         if (!appointment.patientId) continue; // Skip walk-in appointments
 
-        // Never refund a simulated payment — no money was collected, so crediting the
-        // wallet would create real spendable balance out of nothing.
-        if (await paymentService.isSimulatedPayment(appointment.id)) {
-          console.log(`Skipping refund for appointment ${appointment.id}: simulated payment`);
-          continue;
-        }
-
         const consultationFee = parseFloat(appointment.consultationFee);
-        
+
         try {
+          // Never refund a simulated payment — no money was collected, so crediting the
+          // wallet would create real spendable balance out of nothing. Kept inside the
+          // try so a transient lookup failure skips one appointment rather than
+          // aborting the whole batch and leaving later patients unrefunded.
+          if (await paymentService.isSimulatedPayment(appointment.id)) {
+            console.log(`Skipping refund for appointment ${appointment.id}: simulated payment`);
+            continue;
+          }
+
           // Create wallet transaction for refund
           const walletTransaction = await this.processTransaction({
             patientId: appointment.patientId,
@@ -324,13 +358,16 @@ export class WalletService {
       }
       
       console.log(`Successfully processed ${refundDetails.length} refunds totaling ₹${totalRefundAmount}`);
-      
+
+      // Terminate whatever the refund loop skipped so no live token outlives the schedule.
+      await this.cancelRemainingAppointments(scheduleId, cancelReason);
+
       return {
         refundedAppointments: refundDetails.length,
         totalRefundAmount,
         refundDetails
       };
-      
+
     } catch (error) {
       console.error('Error processing schedule cancellation refunds:', error);
       throw error;
@@ -452,30 +489,34 @@ export class WalletService {
       console.log(`Found ${eligibleAppointments.length} eligible appointments for partial refund`);
       
       if (eligibleAppointments.length === 0) {
+        // Still terminate anything left on the schedule (walk-ins, unpaid, online).
+        await this.cancelRemainingAppointments(scheduleId, cancelReason);
         return {
           refundedAppointments: 0,
           totalRefundAmount: 0,
           refundDetails: []
         };
       }
-      
+
       let totalRefundAmount = 0;
       const refundDetails: any[] = [];
-      
+
       // Process each appointment refund
       for (const { appointment, doctorName } of eligibleAppointments) {
         if (!appointment.patientId) continue; // Skip walk-in appointments
 
-        // Never refund a simulated payment — no money was collected, so crediting the
-        // wallet would create real spendable balance out of nothing.
-        if (await paymentService.isSimulatedPayment(appointment.id)) {
-          console.log(`Skipping refund for appointment ${appointment.id}: simulated payment`);
-          continue;
-        }
-
         const consultationFee = parseFloat(appointment.consultationFee);
-        
+
         try {
+          // Never refund a simulated payment — no money was collected, so crediting the
+          // wallet would create real spendable balance out of nothing. Kept inside the
+          // try so a transient lookup failure skips one appointment rather than
+          // aborting the whole batch and leaving later patients unrefunded.
+          if (await paymentService.isSimulatedPayment(appointment.id)) {
+            console.log(`Skipping refund for appointment ${appointment.id}: simulated payment`);
+            continue;
+          }
+
           // Create wallet transaction for refund
           const walletTransaction = await this.processTransaction({
             patientId: appointment.patientId,
@@ -546,13 +587,16 @@ export class WalletService {
       }
       
       console.log(`Successfully processed ${refundDetails.length} partial refunds totaling ₹${totalRefundAmount}`);
-      
+
+      // Terminate whatever the refund loop skipped so no live token outlives the session.
+      await this.cancelRemainingAppointments(scheduleId, cancelReason);
+
       return {
         refundedAppointments: refundDetails.length,
         totalRefundAmount,
         refundDetails
       };
-      
+
     } catch (error) {
       console.error('Error processing partial refunds:', error);
       throw error;
