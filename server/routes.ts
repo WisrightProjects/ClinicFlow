@@ -3660,7 +3660,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           case 'policy_contactUs':
             defaultCategory = 'policy';
             defaultContent = `<h1>Contact Us</h1>
-<p>Email: <a href=\"mailto:support@clinicflow.com\">support@clinicflow.com</a></p>
+<p>Email: <a href=\"mailto:support@clinik.co.in\">support@clinik.co.in</a></p>
 <p>Phone: +91-XXXX-XXXXXX</p>`;
             defaultDescription = 'Contact Us page content';
             break;
@@ -3737,7 +3737,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         try {
           const created = await storage.createConfiguration({
             configKey: 'policy_contactUs',
-            configValue: '<h1>Contact Us</h1><p>Email: support@clinicflow.com</p>',
+            configValue: '<h1>Contact Us</h1><p>Email: support@clinik.co.in</p>',
             configType: 'string',
             description: 'Contact Us page content',
             category: 'policy',

@@ -266,7 +266,7 @@ export default function LandingPage() {
           </div>
         </div>
         <div className="container mx-auto px-4 pb-8 mt-2 text-xs text-muted-foreground flex items-center justify-between">
-          <span>© 2025 Mano Tech Services</span>
+          <span>© 2026 WisRight Technologies Pvt Ltd</span>
           <span className="hidden md:inline">All rights reserved.</span>
         </div>
       </section>
