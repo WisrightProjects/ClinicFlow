@@ -21,12 +21,12 @@ const PatientFooter: React.FC = () => {
             <div className="flex space-x-4">
               <div className="flex items-center space-x-2">
                 <Phone className="h-4 w-4 text-blue-400" />
-                <span className="text-sm">+91-XXXX-XXXXXX</span>
+                <span className="text-sm">+91-95147 95157</span>
               </div>
             </div>
             <div className="flex items-center space-x-2">
               <Mail className="h-4 w-4 text-blue-400" />
-              <span className="text-sm">support@clinik.com</span>
+              <span className="text-sm">support@clinik.co.in</span>
             </div>
           </div>
 
@@ -146,7 +146,7 @@ const PatientFooter: React.FC = () => {
         <div className="container mx-auto px-4">
           <div className="flex justify-center items-center">
             <div className="text-sm text-gray-400">
-              © 2024 Clinik. All rights reserved.
+              © 2026 WisRight Technologies Pvt Ltd. All rights reserved.
             </div>
           </div>
         </div>
