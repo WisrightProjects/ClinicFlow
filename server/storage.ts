@@ -1799,8 +1799,9 @@ export class DatabaseStorage implements IStorage {
           eq(appointments.patientId, appointment.patientId),
           eq(appointments.doctorId, appointment.doctorId),
           eq(appointments.scheduleId, schedule.id),
-          // Only check for non-cancelled appointments
-          ne(appointments.status, "cancelled")
+          // Status is "cancel" here (appointmentStatuses); "cancelled" is the
+          // schedule/reservation spelling and matches nothing on appointments.
+          ne(appointments.status, "cancel")
         )
       )
       .limit(1);

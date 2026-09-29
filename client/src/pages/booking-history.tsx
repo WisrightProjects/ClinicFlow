@@ -75,6 +75,10 @@ export default function BookingHistoryPage() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['/api/patient/appointments'] });
+      // The booking pages cache under ["user-appointments", doctorId] — a different key,
+      // so without this the cancelled appointment stays in their cache (staleTime is
+      // Infinity) and the schedule still shows as "Already Booked" on rebooking.
+      queryClient.invalidateQueries({ queryKey: ['user-appointments'] });
       setCancelReason('');
       setCancellingId(null);
       toast({

@@ -53,13 +53,13 @@ export default function BookingPage() {
       // Fallback to doctor-level check if no scheduleId
       return existingAppointments.some((appointment: any) => 
         appointment.doctorId === Number(doctorId) && 
-        appointment.status !== 'cancelled'
+        appointment.status !== 'cancel'
       );
     }
     
     return existingAppointments.some((appointment: any) => 
       appointment.scheduleId === Number(scheduleId) && 
-      appointment.status !== 'cancelled'
+      appointment.status !== 'cancel'
     );
   };
 

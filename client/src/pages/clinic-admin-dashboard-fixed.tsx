@@ -498,7 +498,7 @@ export default function ClinicAdminDashboard() {
                             Scheduled
                           </Badge>
                         )}
-                        {appointment.status === 'cancelled' && (
+                        {appointment.status === 'cancel' && (
                           <Badge variant="outline" className="flex items-center gap-1 bg-red-50 text-red-600">
                             <XCircle className="h-3.5 w-3.5" />
                             Cancelled
