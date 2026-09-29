@@ -24,6 +24,10 @@ type AppointmentWithDoctor = Appointment & {
 
 type TokenProgress = {
   currentToken: number;
+  /** Lowest token above currentToken whose status is still `token_started`. Every other
+   *  status is skipped — cancelled, no-show, expired, completed, and also hold/pause.
+   *  Null when no waiting token remains. */
+  nextTokenNumber: number | null;
   status: 'start' | 'completed' | 'scheduled' | 'hold' | 'pause' | 'cancel' | 'not_started' | 'no_appointments';
   appointment?: Appointment;
   walkInPatients?: number;
@@ -394,7 +398,10 @@ export default function BookingHistoryPage() {
                                         <span className="text-yellow-600 font-medium">Appointment on hold</span>
                                       ) : appointment.status === "pause" ? (
                                         <span className="text-orange-600 font-medium">Appointment paused</span>
-                                      ) : appointment.tokenNumber === progress.currentToken + 1 ? (
+                                      ) : progress.nextTokenNumber != null &&
+                                          appointment.tokenNumber === progress.nextTokenNumber ? (
+                                        // Compare against the next LIVE token, not currentToken + 1 —
+                                        // that arithmetic pointed at a cancelled row and nobody was told.
                                         <span className="text-green-600 font-medium">You're next!</span>
                                       ) : tokensAhead && tokensAhead > 0 ? (
                                         <span>
