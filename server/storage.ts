@@ -176,7 +176,7 @@ export interface IStorage {
   })[]>;
 
   // Token Progress method
-  getCurrentTokenProgress(doctorId: number, clinicId: number, date: Date, retryCount?: number): Promise<{ currentToken: number; status: 'start' | 'completed' | 'scheduled' | 'hold' | 'pause' | 'cancel' | 'not_started' | 'no_appointments'; appointment?: Appointment }>;
+  getCurrentTokenProgress(doctorId: number, clinicId: number, date: Date, retryCount?: number): Promise<{ currentToken: number; nextTokenNumber: number | null; status: 'start' | 'completed' | 'scheduled' | 'hold' | 'pause' | 'cancel' | 'not_started' | 'no_appointments'; appointment?: Appointment }>;
 
   // Doctor management methods
   createDoctor(user: Omit<InsertUser, "role">, details: { consultationFee: number | string; consultationDuration: number; qualifications?: string; experience?: number; registrationNumber?: string; isEnabled?: boolean; }): Promise<User & { details: DoctorDetail }>;
@@ -2600,7 +2600,7 @@ export class DatabaseStorage implements IStorage {
     clinicId: number, 
     date: Date,
     retryCount = 3
-  ): Promise<{ currentToken: number; status: 'in_progress' | 'completed' | 'token_started' | 'hold' | 'pause' | 'cancel' | 'not_started' | 'no_appointments'; appointment?: Appointment }> {
+  ): Promise<{ currentToken: number; nextTokenNumber: number | null; status: 'in_progress' | 'completed' | 'token_started' | 'hold' | 'pause' | 'cancel' | 'not_started' | 'no_appointments'; appointment?: Appointment }> {
     try {
       console.log('Getting token progress for:', { doctorId, clinicId, date });
 
@@ -2627,9 +2627,32 @@ export class DatabaseStorage implements IStorage {
 
       console.log('Found appointments:', todayAppointments);
 
+      // The next patient in the queue after `token`, by queue position rather than by
+      // number. Callers previously derived this as currentToken + 1, which lands on a
+      // dead row when the following token was cancelled — nobody was then told they
+      // were next. todayAppointments is already ordered by tokenNumber, so the first
+      // match is the lowest. Same "live" rule as notificationService.notifyNextPatients.
+      const nextLiveAfter = (token: number): number | null =>
+        todayAppointments.find(
+          apt => apt.tokenNumber > token && apt.status === 'token_started'
+        )?.tokenNumber ?? null;
+
+      // Front of the live queue: whoever is being consulted, else the first still
+      // waiting. Deliberately ignores hold/pause — a patient set aside does not hold
+      // the front, and letting them define it made the result depend on an unrelated
+      // held patient (tokens 5,6 waiting told 6; add a held token 2 and it told 5).
+      const frontToken =
+        (todayAppointments.find(apt => apt.status === 'in_progress') ??
+          todayAppointments.find(apt => apt.status === 'token_started'))?.tokenNumber ?? null;
+
+      // Product rule: the patient at the front is not "next" — the one behind them is.
+      // Computed once so every branch below reports the same patient.
+      const nextTokenNumber = frontToken === null ? null : nextLiveAfter(frontToken);
+
       if (!todayAppointments || todayAppointments.length === 0) {
         return {
           currentToken: 0,
+          nextTokenNumber: null,
           status: 'no_appointments'
         };
       }
@@ -2647,6 +2670,7 @@ export class DatabaseStorage implements IStorage {
         console.log('Found in-progress appointment:', inProgressAppointment);
         return {
           currentToken: inProgressAppointment.tokenNumber,
+          nextTokenNumber,
           status: 'in_progress',
           appointment: inProgressAppointment
         };
@@ -2659,6 +2683,7 @@ export class DatabaseStorage implements IStorage {
         console.log('Found paused appointment:', pausedAppointment);
         return {
           currentToken: pausedAppointment.tokenNumber,
+          nextTokenNumber,
           status: 'pause',
           appointment: pausedAppointment
         };
@@ -2671,6 +2696,7 @@ export class DatabaseStorage implements IStorage {
         console.log('Found held appointment:', heldAppointment);
         return {
           currentToken: heldAppointment.tokenNumber,
+          nextTokenNumber,
           status: 'hold',
           appointment: heldAppointment
         };
@@ -2683,6 +2709,7 @@ export class DatabaseStorage implements IStorage {
         console.log('Found token started appointment:', tokenStartedAppointment);
         return {
           currentToken: tokenStartedAppointment.tokenNumber,
+          nextTokenNumber,
           status: 'token_started',
           appointment: tokenStartedAppointment
         };
@@ -2704,6 +2731,7 @@ export class DatabaseStorage implements IStorage {
         if (nextAppointment) {
           return {
             currentToken: nextAppointment.tokenNumber,
+            nextTokenNumber,
             status: 'token_started',
             appointment: nextAppointment
           };
@@ -2711,6 +2739,7 @@ export class DatabaseStorage implements IStorage {
 
         return {
           currentToken: lastCompleted.tokenNumber,
+          nextTokenNumber,
           status: 'completed',
           appointment: lastCompleted
         };
@@ -2723,6 +2752,7 @@ export class DatabaseStorage implements IStorage {
         console.log('Found earliest pending appointment:', earliestPending);
         return {
           currentToken: earliestPending.tokenNumber,
+          nextTokenNumber,
           status: 'token_started',
           appointment: earliestPending
         };
@@ -2738,12 +2768,14 @@ export class DatabaseStorage implements IStorage {
       if (inactiveStatuses.includes(lastAppointment.status)) {
         return {
           currentToken: 0,
+          nextTokenNumber: null,
           status: 'not_started' as any,
         };
       }
 
       return {
         currentToken: lastAppointment.tokenNumber,
+        nextTokenNumber,
         status: lastAppointment.status as any,
         appointment: lastAppointment
       };
@@ -2757,6 +2789,7 @@ export class DatabaseStorage implements IStorage {
       }
       return {
         currentToken: 0,
+        nextTokenNumber: null,
         status: 'no_appointments'
       };
     }
