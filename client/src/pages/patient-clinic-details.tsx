@@ -345,11 +345,14 @@ export default function PatientClinicDetails() {
     });
   };
 
-  // Check if user already has an appointment for this schedule
+  // Check if user already has an appointment for this schedule.
+  // Status is "cancel" (appointmentStatuses); "cancelled" matched nothing, so a
+  // cancelled booking kept blocking the patient from rebooking. Keep in step with
+  // the server's duplicate check in storage.createAppointment.
   const hasExistingAppointment = (scheduleId: string) => {
-    return existingAppointments.some((appointment: any) => 
-      appointment.scheduleId === parseInt(scheduleId) && 
-      appointment.status !== 'cancelled'
+    return existingAppointments.some((appointment: any) =>
+      appointment.scheduleId === parseInt(scheduleId) &&
+      appointment.status !== 'cancel'
     );
   };
 

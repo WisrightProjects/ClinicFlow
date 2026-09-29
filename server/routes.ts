@@ -667,6 +667,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         patientId: req.user.id,
         clinicId,
         date: appointmentDate,
+        // Pinned server-side: the spread above would otherwise let a caller set their
+        // own status. Posting status:"completed" makes eta.ts settle every lower token
+        // as already served, corrupting the queue for other patients.
+        status: "token_started",
         tokenNumber: req.body.tokenNumber, // This can be undefined and will be generated in storage
         scheduleId: schedule.id,
         consultationFee: totalAmount, // Store total amount as consultation fee

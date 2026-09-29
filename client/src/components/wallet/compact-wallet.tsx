@@ -210,7 +210,8 @@ export function CompactWallet() {
         </PopoverContent>
       </Popover>
 
-      <DialogContent className="max-w-2xl max-h-[80vh]">
+      {/* overflow-y-auto: max-h alone lets stacked mobile content spill out of the dialog */}
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Wallet className="h-5 w-5" />
@@ -242,6 +243,9 @@ export function CompactWallet() {
 
         <div>
           <h3 className="font-semibold mb-3">All Transactions</h3>
+          {/* h-64, not max-h: Radix's Viewport is h-full, which needs a definite height
+              on the Root to scroll. With only max-h the Viewport grows to content height
+              and the Root clips it, hiding transactions. */}
           <ScrollArea className="h-64 w-full border rounded-lg p-3">
             {walletSummary?.recentTransactions.length === 0 ? (
               <div className="text-center py-8">
