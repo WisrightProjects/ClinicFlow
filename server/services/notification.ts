@@ -20,6 +20,21 @@ function routeForType(type: string): string {
   return '/appointments';
 }
 
+/**
+ * Columns returned to the client for a notification row.
+ *
+ * `created_at` is a naive `timestamp` holding UTC, and drizzle's node-postgres
+ * session returns timestamps as raw strings, so Postgres' own format reaches the
+ * browser unlabelled and is parsed as local time. Emit ISO-8601 instead.
+ *
+ * Listed explicitly rather than `SELECT *, to_char(...) AS created_at`, which
+ * yields two `created_at` keys per row with driver-dependent precedence.
+ */
+const NOTIFICATION_COLUMNS = sql`
+  id, user_id, appointment_id, title, message, type, is_read,
+  to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
+`;
+
 class NotificationService {
   /**
    * Create a new notification.
@@ -44,7 +59,7 @@ class NotificationService {
       const result = await db.execute(sql`
         INSERT INTO notifications (user_id, appointment_id, title, message, type)
         VALUES (${data.userId}, ${data.appointmentId}, ${data.title}, ${data.message}, ${data.type})
-        RETURNING *
+        RETURNING ${NOTIFICATION_COLUMNS}
       `);
 
       console.log('Notification created successfully', {
@@ -79,9 +94,9 @@ class NotificationService {
    */
   async getUnreadNotifications(userId: number) {
     const result = await db.execute(sql`
-      SELECT * FROM notifications
+      SELECT ${NOTIFICATION_COLUMNS} FROM notifications
       WHERE user_id = ${userId} AND is_read = false
-      ORDER BY created_at DESC
+      ORDER BY notifications.created_at DESC
     `);
     
     return result.rows;
@@ -92,9 +107,9 @@ class NotificationService {
    */
   async getAllNotifications(userId: number, limit = 50, offset = 0) {
     const result = await db.execute(sql`
-      SELECT * FROM notifications
+      SELECT ${NOTIFICATION_COLUMNS} FROM notifications
       WHERE user_id = ${userId}
-      ORDER BY created_at DESC
+      ORDER BY notifications.created_at DESC
       LIMIT ${limit} OFFSET ${offset}
     `);
     
@@ -109,7 +124,7 @@ class NotificationService {
       UPDATE notifications
       SET is_read = true
       WHERE id = ${notificationId}
-      RETURNING *
+      RETURNING ${NOTIFICATION_COLUMNS}
     `);
     
     return result.rows[0];
