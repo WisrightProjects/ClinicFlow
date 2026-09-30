@@ -3010,7 +3010,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         // Search for patient by phone number
         const patientResult = await db.execute(sql`
-          SELECT id, name, username, phone, email, phone_verified, created_at
+          SELECT id, name, username, phone, email, phone_verified,
+                 to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
           FROM users 
           WHERE role = 'patient' AND phone = ${phone as string}
           LIMIT 1
@@ -3031,7 +3032,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             a.token_number,
             a.status,
             a.status_notes,
-            a.created_at,
+            -- a.date above is a date-only value stored at midnight UTC and already
+            -- renders correctly; only created_at is a real instant needing a label.
+            to_char(a.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
             d.name as doctor_name,
             c.name as clinic_name
           FROM appointments a
