@@ -48,6 +48,9 @@ export default function UserProfile() {
   const isDoctor = user?.role === "doctor";
   const isAttender = user?.role === "attender";
   const showProfessional = isDoctor || isAttender;
+  // Play's deletion requirement covers end-user accounts; staff removal would
+  // orphan schedules and appointments, so this is offered to patients only.
+  const isPatient = user?.role === "patient";
 
   const { register, handleSubmit, reset, formState: { isDirty } } = useForm<ProfileFormValues>({
     defaultValues: {
@@ -260,6 +263,8 @@ export default function UserProfile() {
           {/* Account deletion. Play requires a visible in-app deletion path for
               any app with accounts; requests are handled by support until the
               in-product flow is built. */}
+          {isPatient && (
+          <>
           <Separator className="my-6" />
 
           <Card className="border-destructive/40">
@@ -271,8 +276,9 @@ export default function UserProfile() {
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Permanently remove your account and personal details. Appointment
-                and payment records are retained as required by Indian tax law.
+                Request deletion of your account and personal details.
+                Appointment and payment records are retained as required by
+                Indian tax law.
               </p>
               <AlertDialog>
                 <AlertDialogTrigger asChild>
@@ -311,6 +317,8 @@ export default function UserProfile() {
               </AlertDialog>
             </CardContent>
           </Card>
+          </>
+          )}
         </div>
       </div>
 

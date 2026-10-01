@@ -77,7 +77,7 @@ const policies = [
 
 <h2>5. Your Rights</h2>
 <ul>
-<li>Update, correct, or delete your data anytime</li>
+<li>Update or correct your data anytime</li>
 <li>Request account deletion from Profile, or by emailing support@clinik.co.in</li>
 <li>Control notifications and location sharing in settings</li>
 </ul>`,
@@ -342,7 +342,7 @@ const policies = [
 <p>Yes. ClinicFlow uses encryption and secure servers. Your data is shared only with the hospital/doctor you book with.</p>
 
 <h3>Can I delete my account?</h3>
-<p>Yes. Open Profile and tap Delete Account, or email support@clinik.co.in from your registered email address. We verify and process requests within 30 days. Appointment and payment records are retained as required by Indian tax law.</p>
+<p>Yes. Open Profile and tap Delete Account to start a request, or email support@clinik.co.in from your registered email address. We verify and process requests within 30 days. Appointment and payment records are retained as required by Indian tax law.</p>
 
 <h3>Does ClinicFlow track my location?</h3>
 <p>Only if you enable location services. Location is used for travel-time reminders to help you arrive on time.</p>`,
