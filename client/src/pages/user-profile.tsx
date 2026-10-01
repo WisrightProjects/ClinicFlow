@@ -14,7 +14,17 @@ import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { ArrowLeft, User, Phone, Mail, MapPin, Stethoscope, Save } from "lucide-react";
+import { ArrowLeft, User, Phone, Mail, MapPin, Stethoscope, Save, Trash2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { useForm } from "react-hook-form";
 
 interface ProfileFormValues {
@@ -38,6 +48,9 @@ export default function UserProfile() {
   const isDoctor = user?.role === "doctor";
   const isAttender = user?.role === "attender";
   const showProfessional = isDoctor || isAttender;
+  // Play's deletion requirement covers end-user accounts; staff removal would
+  // orphan schedules and appointments, so this is offered to patients only.
+  const isPatient = user?.role === "patient";
 
   const { register, handleSubmit, reset, formState: { isDirty } } = useForm<ProfileFormValues>({
     defaultValues: {
@@ -246,6 +259,66 @@ export default function UserProfile() {
               </Button>
             </div>
           </form>
+
+          {/* Account deletion. Play requires a visible in-app deletion path for
+              any app with accounts; requests are handled by support until the
+              in-product flow is built. */}
+          {isPatient && (
+          <>
+          <Separator className="my-6" />
+
+          <Card className="border-destructive/40">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-destructive text-base">
+                <Trash2 className="h-4 w-4" />
+                Delete Account
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Request deletion of your account and personal details.
+                Appointment and payment records are retained as required by
+                Indian tax law.
+              </p>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button type="button" variant="destructive" className="gap-2">
+                    <Trash2 className="h-4 w-4" />
+                    Delete Account
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Account deletion</AlertDialogTitle>
+                    <AlertDialogDescription asChild>
+                      <div className="space-y-3 text-sm">
+                        <p>
+                          This account cannot be deleted from within the app yet.
+                        </p>
+                        <p>
+                          To request deletion, email{" "}
+                          <a
+                            href="mailto:support@clinik.co.in?subject=Account%20deletion%20request"
+                            className="font-medium text-primary underline"
+                          >
+                            support@clinik.co.in
+                          </a>{" "}
+                          from your registered email address, or include your
+                          registered mobile number. We will verify and process the
+                          request within 30 days.
+                        </p>
+                      </div>
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogAction>Close</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </CardContent>
+          </Card>
+          </>
+          )}
         </div>
       </div>
 
