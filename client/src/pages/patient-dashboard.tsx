@@ -21,6 +21,7 @@ import PatientFooter from "@/components/PatientFooter";
 import { useNearbyClinics } from "@/hooks/use-nearby-clinics";
 import { useGeolocation } from "@/hooks/use-geolocation";
 import { useAppConfig } from "@/hooks/use-app-config";
+import { useAuth } from "@/hooks/use-auth";
 
 export default function PatientDashboard() {
   const [searchTerm, setSearchTerm] = useState("");
@@ -29,6 +30,12 @@ export default function PatientDashboard() {
   const [, setLocation] = useLocation();
   const [lastFetchedLocation, setLastFetchedLocation] = useState<{lat: number, lng: number} | null>(null);
   
+  // See users.bypassNearby in shared/schema.ts. This route is not behind
+  // ProtectedRoute, so the page can mount before /api/user resolves and the flag
+  // must not be read until it has.
+  const { user, isLoading: isLoadingAuth } = useAuth();
+  const bypassNearby = Boolean(user?.bypassNearby);
+
   // Fetch admin configuration for nearby feature
   const { 
     nearbyEnabled: configNearbyEnabled, 
@@ -43,10 +50,9 @@ export default function PatientDashboard() {
   
   // Initialize nearbyEnabled from config once loaded
   useEffect(() => {
-    if (!isLoadingConfig && configNearbyEnabled) {
-      setNearbyEnabled(true);
-    }
-  }, [isLoadingConfig, configNearbyEnabled]);
+    if (isLoadingConfig || isLoadingAuth) return;
+    setNearbyEnabled(Boolean(configNearbyEnabled) && !bypassNearby);
+  }, [isLoadingConfig, isLoadingAuth, configNearbyEnabled, bypassNearby]);
 
   // Geolocation hook - auto-request if nearby is enabled by config
   const {
@@ -55,7 +61,7 @@ export default function PatientDashboard() {
     requestLocation,
     error: locationError
   } = useGeolocation({ 
-    autoRequest: Boolean(configNearbyEnabled && !isLoadingConfig),
+    autoRequest: Boolean(configNearbyEnabled && !isLoadingConfig && !isLoadingAuth && !bypassNearby),
     minAccuracy: 1000,
     maxAttempts: 2
   });
