@@ -2788,7 +2788,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch('/api/notifications/:id/read', async (req, res) => {
     if (!req.user) return res.sendStatus(401);
     try {
-      const notification = await notificationService.markAsRead(parseInt(req.params.id));
+      const notification = await notificationService.markAsRead(parseInt(req.params.id), req.user.id);
+      if (!notification) {
+        return res.status(404).json({ error: 'Notification not found' });
+      }
       res.json(notification);
     } catch (error) {
       console.log('Database mark as read error, using fallback:', error);
@@ -2834,7 +2837,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete('/api/notifications/:id', async (req, res) => {
     if (!req.user) return res.sendStatus(401);
     try {
-      const result = await notificationService.deleteNotification(parseInt(req.params.id));
+      const result = await notificationService.deleteNotification(parseInt(req.params.id), req.user.id);
+      if (!result.success) {
+        return res.status(404).json({ error: 'Notification not found' });
+      }
       res.json(result);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -3872,8 +3878,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Admin endpoint: Credit/Debit patient wallet
   app.post("/api/admin/wallet/transaction", async (req, res) => {
-    if (!req.user || !['super_admin', 'clinic_admin', 'hospital_admin'].includes(req.user.role)) {
-      return res.status(403).json({ message: 'Admin access required' });
+    // super_admin only: patientId comes from the body and patients have no clinic,
+    // so clinic_admin could move money in any patient's wallet.
+    if (!req.user || req.user.role !== 'super_admin') {
+      return res.status(403).json({ message: 'Super admin access required' });
     }
 
     try {
@@ -4051,8 +4059,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Mark appointment as refunded (for duplicate refund prevention)
   app.patch("/api/appointments/:appointmentId/mark-refunded", async (req, res) => {
-    if (!req.user || !['super_admin', 'clinic_admin', 'hospital_admin'].includes(req.user.role)) {
-      return res.status(403).json({ message: 'Admin access required' });
+    // super_admin only: hasBeenRefunded is the idempotency guard real refunds
+    // filter on, so marking another clinic's appointment suppresses its patient's
+    // genuine refund. Pairs with /api/admin/wallet/transaction in the same flow.
+    if (!req.user || req.user.role !== 'super_admin') {
+      return res.status(403).json({ message: 'Super admin access required' });
     }
 
     try {
@@ -4070,8 +4081,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Get wallet statistics for admin dashboard
   app.get("/api/admin/wallet/stats", async (req, res) => {
-    if (!req.user || !['super_admin', 'clinic_admin', 'hospital_admin'].includes(req.user.role)) {
-      return res.status(403).json({ message: 'Admin access required' });
+    // super_admin only: neither query here is clinic-scoped.
+    if (!req.user || req.user.role !== 'super_admin') {
+      return res.status(403).json({ message: 'Super admin access required' });
     }
 
     try {
