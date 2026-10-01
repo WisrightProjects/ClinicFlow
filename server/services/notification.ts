@@ -116,14 +116,12 @@ class NotificationService {
     return result.rows;
   }
 
-  /**
-   * Mark a notification as read
-   */
-  async markAsRead(notificationId: number) {
+  /** Mark a notification as read; undefined if it isn't owned by userId. */
+  async markAsRead(notificationId: number, userId: number) {
     const result = await db.execute(sql`
       UPDATE notifications
       SET is_read = true
-      WHERE id = ${notificationId}
+      WHERE id = ${notificationId} AND user_id = ${userId}
       RETURNING ${NOTIFICATION_COLUMNS}
     `);
     
@@ -143,16 +141,14 @@ class NotificationService {
     return { success: true };
   }
 
-  /**
-   * Delete a notification
-   */
-  async deleteNotification(notificationId: number) {
-    await db.execute(sql`
+  /** Delete a notification owned by userId; reports whether a row was removed. */
+  async deleteNotification(notificationId: number, userId: number) {
+    const result = await db.execute(sql`
       DELETE FROM notifications
-      WHERE id = ${notificationId}
+      WHERE id = ${notificationId} AND user_id = ${userId}
     `);
     
-    return { success: true };
+    return { success: (result.rowCount ?? 0) > 0 };
   }
 
   /**
