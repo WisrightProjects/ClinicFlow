@@ -40,6 +40,9 @@ export const users = pgTable("users", {
   lastOtpSentAt: timestamp("last_otp_sent_at"),
   phoneVerified: boolean("phone_verified").default(false),
   mustChangePassword: boolean("must_change_password").default(false),
+  // Exempts the account from the distance-based clinic filter so app-store and
+  // payment-gateway reviewers testing from outside India see every clinic.
+  bypassNearby: boolean("bypass_nearby").default(false),
   mpin: varchar("mpin", { length: 255 }),
   mpinAttempts: integer("mpin_attempts").default(0),
   mpinLockedUntil: timestamp("mpin_locked_until"),
