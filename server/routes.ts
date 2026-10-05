@@ -1168,7 +1168,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: 'Attender not found' });
       }
       
-      const updatedAttender = await storage.updateUser(attenderId, req.body);
+      // req.body went straight to updateUser, which does db.update().set(),
+      // so role was writable: a clinic_admin could create an attender here and
+      // then promote it to super_admin. Accept contact fields only. password is
+      // excluded deliberately -- this handler does not hash, so accepting one
+      // would store a plaintext credential.
+      const updates = insertUserSchema
+        .pick({ name: true, email: true, phone: true, username: true })
+        .partial()
+        .parse(req.body);
+
+      const updatedAttender = await storage.updateUser(attenderId, updates);
       res.json(updatedAttender);
     } catch (error) {
       console.error('Error updating attender:', error);
@@ -2927,8 +2937,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     app.get("/api/attender-doctor/:attenderId", async (req, res) => {
+      // Previously unauthenticated. An attender reads their own assignments
+      // (doctor-schedules.tsx), staff read anyone's.
+      if (!req.user) return res.sendStatus(401);
+      const requestedId = parseInt(req.params.attenderId);
+      const isSelf = req.user.id === requestedId;
+      const isStaff = ["super_admin", "doctor", "clinic_admin", "hospital_admin"].includes(req.user.role);
+      if (!isSelf && !isStaff) {
+        return res.sendStatus(403);
+      }
       try {
-        const attenderId = parseInt(req.params.attenderId);
+        const attenderId = requestedId;
         const doctors = await storage.getAttenderDoctors(attenderId);
         res.json(doctors);
       } catch (error) {
@@ -2939,6 +2958,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     // Assign doctor to attender
     app.post("/api/attender-doctors", async (req, res) => {
+      // Previously unauthenticated. Attender permissions are derived from this
+      // mapping (getAttenderDoctors), so an anonymous call here granted another
+      // clinic's queue: patient names, phone numbers and appointment control.
+      if (!req.user || !["super_admin", "doctor", "clinic_admin", "hospital_admin"].includes(req.user.role)) {
+        return res.sendStatus(403);
+      }
       try {
         const { attenderId, doctorId, clinicId } = req.body;
 
@@ -3085,6 +3110,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     // Remove a doctor assignment
     app.delete("/api/attender-doctors", async (req, res) => {
+      // Previously unauthenticated: anyone could strip an attender's doctor
+      // assignments and lock them out of their own clinic.
+      if (!req.user || !["super_admin", "doctor", "clinic_admin", "hospital_admin"].includes(req.user.role)) {
+        return res.sendStatus(403);
+      }
       try {
         const { attenderId, doctorId } = req.body;
 

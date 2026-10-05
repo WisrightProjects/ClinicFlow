@@ -25,6 +25,24 @@ declare module "express-session" {
 
 const scryptAsync = promisify(scrypt);
 
+/**
+ * The only fields POST /api/register accepts from a request body.
+ *
+ * An allowlist rather than an omit list: insertUserSchema is
+ * createInsertSchema(users) and accepts every column, so a blocklist would
+ * silently admit any column added to the table later. Role, mpin,
+ * phone_verified, must_change_password and the mpin lockout counters are all
+ * decided by the server and never by the caller.
+ */
+const REGISTRATION_FIELDS = insertUserSchema.pick({
+  name: true,
+  username: true,
+  password: true,
+  phone: true,
+  email: true,
+  clinicId: true,
+});
+
 async function hashPassword(password: string) {
   const salt = randomBytes(16).toString("hex");
   const buf = (await scryptAsync(password, salt, 64)) as Buffer;
@@ -105,7 +123,27 @@ export function setupAuth(app: Express) {
     try {
       const data = { ...req.body };
       if (data.email === "") data.email = null;
-      const parsed = insertUserSchema.parse(data);
+      // This route is anonymous and req.login below signs in whatever it creates,
+      // so pick the registration fields rather than omitting known-bad ones:
+      // createInsertSchema accepts every column, and a blocklist silently admits
+      // any column added later. Notably this keeps mpin, phone_verified,
+      // must_change_password and the mpin lockout counters server-controlled --
+      // a caller that could set mpin directly would have a password-equivalent
+      // account with no OTP verification at all.
+      const parsed = REGISTRATION_FIELDS.parse(data);
+
+      // Attender is the only role a request may ask for, and only from callers who
+      // may already create one via POST /api/attenders (routes.ts:1142).
+      const canCreateAttender = ["super_admin", "doctor", "clinic_admin"].includes(
+        req.user?.role ?? ""
+      );
+      if (data.role !== undefined && !(canCreateAttender && data.role === "attender")) {
+        // Refuse rather than quietly downgrading to patient: /clinic/:id is an
+        // unguarded route, so a signed-in patient reaching its attender form would
+        // otherwise create a stray account and be logged into it by req.login.
+        return res.status(403).json({ message: "Not permitted to set a role" });
+      }
+      const role = canCreateAttender && data.role === "attender" ? "attender" : "patient";
 
       const existingUser = await storage.getUserByUsername(parsed.username);
       if (existingUser) {
@@ -115,18 +153,26 @@ export function setupAuth(app: Express) {
       const hashedPassword = await hashPassword(parsed.password);
       const user = await storage.createUser({
         ...parsed,
+        // clinicId identifies the clinic a staff member belongs to; it is
+        // meaningless on a patient and must not be settable by one.
+        clinicId: role === "attender" ? parsed.clinicId : null,
+        role,
         password: hashedPassword,
       });
 
-      // If this is an attender being created by a clinic admin, don't auto-login
-      if (req.user && req.user.role === "clinic_admin" && parsed.role === "attender") {
-        return res.status(201).json(user);
+      // Never return credential columns, even to the account's own creator.
+      const { password: _pw, mpin: _mpin, ...safeUser } = user;
+
+      // An attender created by staff: do not auto-login, which would otherwise
+      // replace the creator's own session with the new account's.
+      if (role === "attender") {
+        return res.status(201).json(safeUser);
       }
       
       // Otherwise, log the user in (normal registration flow)
       req.login(user, (err) => {
         if (err) return next(err);
-        res.status(201).json(user);
+        res.status(201).json(safeUser);
       });
     } catch (err) {
       console.error("Registration error:", err);
