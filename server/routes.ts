@@ -2,7 +2,7 @@ import express, { Express } from 'express';
 import { createServer, Server } from 'http';
 import cors from 'cors';
 import { storage, getTokens } from './storage';
-import { createSessionMiddleware, setupAuth } from './auth';
+import { createSessionMiddleware, setupAuth, hashPassword } from './auth';
 import { insertAppointmentSchema, insertAttenderDoctorSchema, insertClinicSchema, insertUserSchema, type AttenderDoctor, type User } from "../shared/schema";
 import { insertDoctorDetailSchema, appointments, doctorSchedules, deviceTokens } from "../shared/schema";
 import { z } from "zod";
@@ -13,16 +13,6 @@ import { paymentService } from './services/payment';
 import { isScheduleEnded, userCanResolveSchedule, resolveEndedScheduleTokens } from './services/schedule-resolution';
 import { db } from './db';
 import { eq, and, sql, isNull, not, gte } from 'drizzle-orm';
-import { scrypt, randomBytes } from "crypto";
-import { promisify } from "util";
-
-const scryptAsync = promisify(scrypt);
-
-async function hashPassword(password: string) {
-  const salt = randomBytes(16).toString("hex");
-  const buf = (await scryptAsync(password, salt, 64)) as Buffer;
-  return `${buf.toString("hex")}.${salt}`;
-}
 
 
 // Simple in-memory notification store as fallback
@@ -420,19 +410,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         role: "doctor"
       };
       
-      const userData = insertUserSchema.parse(doctorDataWithDefaults);
-      
-      const doctor = await storage.createUser(userData);
+      // Credential and verification state belong to the server, not the body.
+      const userData = insertUserSchema.omit({
+          mpin: true,
+          mpinAttempts: true,
+          mpinLockedUntil: true,
+          lastMpinChange: true,
+          lastOtpSentAt: true,
+          phoneVerified: true,
+          mustChangePassword: true,
+          bypassNearby: true,
+        }).parse(doctorDataWithDefaults);
+
+      // Hash the doctor password before creating the user
+      const doctor = await storage.createUser({
+        ...userData,
+        password: await hashPassword(userData.password),
+      });
       
       // Add doctor to clinics if provided
       if (clinicIds && Array.isArray(clinicIds) && clinicIds.length > 0) {
         await storage.updateDoctorClinics(doctor.id, clinicIds);
       }
       
-      res.status(201).json(doctor);
+      const { password: _pw, mpin: _mpin, ...safeDoctor } = doctor;
+      res.status(201).json(safeDoctor);
     } catch (error) {
       console.error('Error creating doctor:', error);
-      res.status(400).json({ message: error instanceof Error ? error.message : 'Invalid doctor data' });
+      res.status(400).json({ message: 'Invalid doctor data' });
     }
   });
 
@@ -1143,16 +1148,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.sendStatus(403);
     }
     try {
-      const userData = insertUserSchema.parse({
+      // Credential and verification state belong to the server, not the body.
+      const userData = insertUserSchema.omit({
+          mpin: true,
+          mpinAttempts: true,
+          mpinLockedUntil: true,
+          lastMpinChange: true,
+          lastOtpSentAt: true,
+          phoneVerified: true,
+          mustChangePassword: true,
+          bypassNearby: true,
+        }).parse({
         ...req.body,
         role: "attender"
       });
       
-      const attender = await storage.createUser(userData);
-      res.status(201).json(attender);
+      // Hash the attender password before creating the user
+      const attender = await storage.createUser({
+        ...userData,
+        password: await hashPassword(userData.password),
+      });
+
+      const { password: _pw, mpin: _mpin, ...safeAttender } = attender;
+      res.status(201).json(safeAttender);
     } catch (error) {
       console.error('Error creating attender:', error);
-      res.status(400).json({ message: error instanceof Error ? error.message : 'Invalid attender data' });
+      res.status(400).json({ message: 'Invalid attender data' });
     }
   });
 
@@ -1274,12 +1295,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (adminEmail) adminUpdates.email = adminEmail;
           if (adminUsername) adminUpdates.username = adminUsername;
           if (adminPassword) {
-            const { scrypt, randomBytes } = await import('crypto');
-            const { promisify } = await import('util');
-            const scryptAsync = promisify(scrypt);
-            const salt = randomBytes(16).toString('hex');
-            const buf = (await scryptAsync(adminPassword, salt, 64)) as Buffer;
-            adminUpdates.password = `${buf.toString('hex')}.${salt}`;
+            adminUpdates.password = await hashPassword(adminPassword);
           }
           await storage.updateUser(admin.id, adminUpdates);
         }
