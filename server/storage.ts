@@ -309,6 +309,36 @@ export interface IStorage {
   markAppointmentAsRefunded(appointmentId: number, refundAmount: number): Promise<void>;
 }
 
+/**
+ * scrypt output as hashPassword produces it: 64-byte key and 16-byte salt, hex
+ * encoded and joined with a dot.
+ */
+const HASHED_PASSWORD = /^[0-9a-f]{128}\.[0-9a-f]{32}$/;
+
+/**
+ * Refuse to store a password that is not already hashed.
+ *
+ * Callers hash before reaching the storage layer -- every one of them does --
+ * but two route handlers silently did not, so clear-text passwords reached the
+ * database and those accounts could never authenticate: comparePasswords splits
+ * the stored value on "." for the salt and finds none. Nothing failed loudly,
+ * so it went unnoticed.
+ *
+ * Deliberately a check rather than hashing here: callers already hash, so doing
+ * it in this layer would double-hash them. A double hash is still a well-formed
+ * hex.salt string, so it would produce the same silent lockout at every call
+ * site instead of two.
+ *
+ * Note that scripts/seed-production-*.sql insert rows directly and bypass this.
+ */
+function assertPasswordIsHashed(password: string, caller: string): void {
+  if (!HASHED_PASSWORD.test(password)) {
+    throw new Error(
+      `${caller}: password must be hashed before storage. Call hashPassword() first.`
+    );
+  }
+}
+
 export class DatabaseStorage implements IStorage {
   sessionStore: session.Store;
 
@@ -447,11 +477,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
+    assertPasswordIsHashed(insertUser.password, "createUser");
     const [user] = await db.insert(users).values(insertUser).returning();
     return user;
   }
 
   async updateUser(id: number, userData: Partial<InsertUser>): Promise<User> {
+    if (userData.password !== undefined) {
+      assertPasswordIsHashed(userData.password, "updateUser");
+    }
     const [updatedUser] = await db
       .update(users)
       .set(userData)
