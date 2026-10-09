@@ -92,6 +92,7 @@ export default function PatientClinicDetails() {
     enabled: !!user,
   });
 
+  const selectedDoctorData = doctors.find((d: any) => d.id === selectedDoctor);
   const walletBalance = parseFloat(walletSummary?.wallet?.balance ?? "0");
   const bookingTotal = feeData?.total ?? 0;
   const onlinePaymentEnabled = feeData?.onlinePaymentEnabled ?? false;
@@ -522,7 +523,7 @@ export default function PatientClinicDetails() {
           // Show toast notification
           toast({
             title: "🌟 Favorited Schedule is Now Active!",
-            description: `Booking is now open for Dr. ${doctors.find(d => d.id === selectedDoctor)?.name}. You can now book your appointment.`,
+            description: `Booking is now open for Dr. ${selectedDoctorData?.name}. You can now book your appointment.`,
             duration: 8000,
           });
 
@@ -761,10 +762,12 @@ export default function PatientClinicDetails() {
                 <p className="text-sm mt-1">{clinic.phone}</p>
                 <p className="text-sm">{clinic.email}</p>
               </div>
-              <div>
-                <h3 className="font-medium">Hours</h3>
-                <p className="text-sm mt-1">{clinic.hours}</p>
-              </div>
+              {clinic.openingHours && (
+                <div>
+                  <h3 className="font-medium">Hours</h3>
+                  <p className="text-sm mt-1">{clinic.openingHours}</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -832,20 +835,19 @@ export default function PatientClinicDetails() {
               <div className="flex items-start gap-6 mb-6">
                 <Avatar className="h-16 w-16">
                   <AvatarImage 
-                    src={doctors.find(d => d.id === selectedDoctor)?.imageUrl} 
-                    alt={doctors.find(d => d.id === selectedDoctor)?.name} 
+                    src={selectedDoctorData?.imageUrl}
+                    alt={selectedDoctorData?.name}
                   />
                   <AvatarFallback>
-                    {doctors.find(d => d.id === selectedDoctor)?.name.split(" ").map(n => n[0]).join("")}
+                    {selectedDoctorData?.name.split(" ").map((n: string) => n[0]).join("")}
                   </AvatarFallback>
                 </Avatar>
                 <div>
-                  <h2 className="text-2xl font-bold">{doctors.find(d => d.id === selectedDoctor)?.name}</h2>
-                  <p className="text-muted-foreground">{doctors.find(d => d.id === selectedDoctor)?.specialty}</p>
-                  <p className="mt-2">{doctors.find(d => d.id === selectedDoctor)?.bio}</p>
-                  <p className="text-sm mt-1">
-                    <span className="font-medium">Education:</span> {doctors.find(d => d.id === selectedDoctor)?.education}
-                  </p>
+                  <h2 className="text-2xl font-bold">{selectedDoctorData?.name}</h2>
+                  <p className="text-muted-foreground">{selectedDoctorData?.specialty}</p>
+                  {selectedDoctorData?.bio && (
+                    <p className="mt-2">{selectedDoctorData.bio}</p>
+                  )}
                 </div>
               </div>
               
