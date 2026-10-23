@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { readableError } from "@/lib/error-message";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { invalidateWalletQueries } from "@/utils/wallet-utils";
@@ -80,7 +81,7 @@ export default function PatientClinicDetails() {
 
   // Booking fee is computed by the server; the client only displays it.
   const { data: feeData, isLoading: isLoadingFee } = useQuery<
-    BookingFee & { onlinePaymentEnabled: boolean }
+    BookingFee & { onlinePaymentEnabled: boolean; liveGateway?: boolean }
   >({
     queryKey: ["/api/booking/fee"],
     enabled: !!user,
@@ -96,6 +97,9 @@ export default function PatientClinicDetails() {
   const walletBalance = parseFloat(walletSummary?.wallet?.balance ?? "0");
   const bookingTotal = feeData?.total ?? 0;
   const onlinePaymentEnabled = feeData?.onlinePaymentEnabled ?? false;
+  // True once a real gateway is collecting money. The online path then leaves the app
+  // for the gateway's checkout instead of completing instantly.
+  const liveGateway = feeData?.liveGateway ?? false;
   const canPayFromWallet = !!feeData && walletBalance >= bookingTotal;
 
   // The dialog can open before the fee/wallet queries resolve, when canPayFromWallet is
@@ -154,8 +158,10 @@ export default function PatientClinicDetails() {
       }
 
       // Give the simulated gateway a moment so it reads like a real payment rather
-      // than an instant jump. Purely cosmetic — remove once the real gateway lands.
-      if (appointmentData.method === "online") {
+      // than an instant jump. Purely cosmetic, and only for the simulator: with a live
+      // gateway this would stall the patient on a fake "Processing payment" screen
+      // before the real checkout is even requested.
+      if (appointmentData.method === "online" && !liveGateway) {
         await new Promise((resolve) => setTimeout(resolve, 1600));
       }
 
@@ -167,6 +173,38 @@ export default function PatientClinicDetails() {
       const [hours, minutes] = timeStr.split(":");
       const appointmentDate = new Date(appointmentData.date);
       appointmentDate.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+
+      // Real gateway: hold a token server-side, then hand the patient to the gateway's
+      // checkout. The appointment is created once payment is confirmed, not here — so
+      // this branch navigates away and never resolves into onSuccess.
+      //
+      // Must come before the token-number calculation below: the server allocates the
+      // token for a gateway booking, and posting a client-computed one to
+      // /api/appointments is refused with a 409 once a real gateway is live.
+      if (appointmentData.method === "online" && liveGateway) {
+        const initiateRes = await apiRequest("POST", "/api/payments/online/initiate", {
+          doctorId: appointmentData.doctorId,
+          clinicId: appointmentData.clinicId,
+          scheduleId: appointmentData.scheduleId,
+          date: appointmentDate.toISOString(),
+          isOnBehalf: appointmentData.isOnBehalf || false,
+          guestName: appointmentData.guestName || undefined,
+          guestPhone: appointmentData.guestPhone || undefined,
+        });
+        const session = await initiateRes.json();
+        if (!session?.paymentUrl) {
+          throw new Error("Could not start the payment. Please try again.");
+        }
+        window.location.href = session.paymentUrl;
+
+        // Hold the payment screen while the browser navigates away, but do not wait
+        // forever: pressing Back on Android returns here without a reload, and a promise
+        // that never settles would leave the dialog stuck with no way to retry.
+        await new Promise((resolve) => setTimeout(resolve, 8000));
+        throw new Error(
+          "Payment was not completed. If money was debited it will be added to your wallet shortly."
+        );
+      }
 
       // Generate the next token number for this appointment
       // First get existing appointments for this doctor/clinic/date to calculate token number
@@ -253,7 +291,16 @@ export default function PatientClinicDetails() {
       }
     },
     onError: (error: Error) => {
-      const message = error.message || "Failed to book appointment. Please try again.";
+      // Unwrap `400: {"message":"..."}` so the patient reads the sentence the server
+      // wrote rather than a raw status line and JSON.
+      const message = readableError(error);
+
+      // The gateway may have been switched on since this client last read
+      // /api/booking/fee, which is cached for five minutes. A stale `liveGateway: false`
+      // sends the booking down the simulator path, the server refuses it, and retrying
+      // fails identically — with no way to force a refresh inside the Android WebView.
+      // Re-fetching the fee makes the next attempt take the right path on its own.
+      queryClient.invalidateQueries({ queryKey: ["/api/booking/fee"] });
 
       // Surface the failure inside the payment screen instead of behind it, so the
       // patient never sees "Payment Successful" for a booking that did not happen.
