@@ -13,6 +13,7 @@ import { format, startOfDay } from "date-fns";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, Clock, UserCheck, UserX, Building, Calendar as CalendarIcon, Users } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { readableError } from "@/lib/error-message";
 import { useToast } from "@/hooks/use-toast";
 import { NavigationButtons } from "@/components/navigation-buttons";
 import { invalidateWalletQueries } from "@/utils/wallet-utils";
@@ -59,18 +60,6 @@ type AvailableSlotsResponse = {
  * Unwrap it so the patient sees "Insufficient wallet balance" rather than
  * `400: {"message":"Insufficient wallet balance"}`.
  */
-function readableError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error ?? "");
-  const withoutStatus = raw.replace(/^\d{3}:\s*/, "").trim();
-  try {
-    const parsed = JSON.parse(withoutStatus);
-    if (parsed && typeof parsed.message === "string") return parsed.message;
-  } catch {
-    // Body was not JSON — use it as-is.
-  }
-  return withoutStatus || "Something went wrong. Please try again.";
-}
-
 export default function PatientBookingPage() {
   const { doctorId } = useParams();
   const [_, navigate] = useLocation();
@@ -269,6 +258,13 @@ export default function PatientBookingPage() {
     onError: (error) => {
       console.error('Booking error:', error);
       const message = readableError(error);
+
+      // The gateway may have been switched on since this client last read
+      // /api/booking/fee, which is cached. A stale `liveGateway: false` sends the booking
+      // down the simulator path, the server refuses it, and retrying fails identically —
+      // with no way to force a refresh inside the Android WebView. Re-fetching the fee
+      // makes the next attempt take the right path on its own.
+      queryClient.invalidateQueries({ queryKey: ["/api/booking/fee"] });
 
       // Surface the failure inside the payment screen instead of behind it, so the
       // patient never sees "Payment Successful" for a booking that did not happen.
