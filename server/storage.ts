@@ -17,7 +17,9 @@ import {
   appointmentRefunds,
   tokenReservations,
   deviceTokens,
+  payments,
   type User,
+  // (DuplicateBookingError is imported below, from ./errors)
   type AttenderDoctor,
   type InsertUser,
   type Appointment,
@@ -34,8 +36,10 @@ import {
   type PatientWallet,
   type WalletTransaction,
   type AppointmentRefund,
-  type TokenReservation
+  type TokenReservation,
+  type Payment
 } from "@shared/schema";
+import { DuplicateBookingError } from "./errors";
 import { eq, or, and, sql, inArray, lte, gte, count, not, gt, lt, getTableColumns, isNotNull, isNull, ne, max } from "drizzle-orm";
 import { db } from "./db";
 import session from "express-session";
@@ -1841,7 +1845,9 @@ export class DatabaseStorage implements IStorage {
       .limit(1);
     
     if (existingAppointment.length > 0) {
-      throw new Error("You already have an appointment booked with this doctor for this schedule. Please check your existing appointments.");
+      // Typed so the online-payment path can tell a duplicate from a general failure
+      // without matching on the message text. The message itself is unchanged.
+      throw new DuplicateBookingError();
     }
     
     // Get current token count — exclude cancelled appointments so cancellations
@@ -5304,7 +5310,16 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  async reserveNextToken(scheduleId: number, reservedByUserId: number): Promise<TokenReservation> {
+  async reserveNextToken(
+    scheduleId: number,
+    reservedByUserId: number,
+    /**
+     * Overrides the configured hold duration. The walk-in default is tuned for someone
+     * standing at the front desk; a patient on a hosted payment page needs considerably
+     * longer (a UPI collect request alone gives the payer about five minutes).
+     */
+    ttlSecondsOverride?: number
+  ): Promise<TokenReservation> {
     // 1. Expire any old reservations first
     await this.expireStaleReservations();
 
@@ -5324,7 +5339,8 @@ export class DatabaseStorage implements IStorage {
 
     // 4. Read timeout from config (default 300 seconds)
     const timeoutConfig = await this.getConfiguration('token_reservation_timeout_seconds');
-    const timeoutSeconds = timeoutConfig ? parseInt(timeoutConfig.configValue) : 300;
+    const timeoutSeconds =
+      ttlSecondsOverride ?? (timeoutConfig ? parseInt(timeoutConfig.configValue) : 300);
     const expiresAt = new Date(Date.now() + timeoutSeconds * 1000);
     const [reservation] = await db.insert(tokenReservations).values({
       scheduleId,
@@ -5389,6 +5405,96 @@ export class DatabaseStorage implements IStorage {
     await db.update(tokenReservations).set({ status: "confirmed" }).where(eq(tokenReservations.id, reservationId));
 
     return appointment;
+  }
+
+  /**
+   * Converts a held token into a real, paid patient appointment after the gateway has
+   * confirmed payment. The online-payment sibling of confirmTokenReservation, which
+   * creates unpaid walk-in guest appointments and cannot be reused here.
+   *
+   * Returns null when the hold is already gone -- expired by the 60s sweep, or claimed by
+   * a concurrent caller. The caller must then refund to the wallet rather than book,
+   * because by this point HDFC has already taken the patient's money.
+   *
+   * Everything happens in one transaction so a failure cannot leave a confirmed
+   * reservation without its appointment, or an appointment without its payment row.
+   */
+  async confirmReservationAsPaidBooking(
+    reservationId: number,
+    paymentId: number,
+    appointmentData: Omit<Appointment, "id"> & { tokenNumber?: number }
+  ): Promise<{ appointment: Appointment } | null> {
+    return await db.transaction(async (tx) => {
+      // Claim the hold conditionally. The expiry sweep is a read-then-update with no
+      // lock, so without this a settle and a sweep can interleave: the sweep expires the
+      // reservation and shifts the next patient onto this token, then we insert the same
+      // token number again. Postgres serialises this UPDATE, so only one caller wins.
+      const claimed = await tx
+        .update(tokenReservations)
+        .set({ status: "confirmed" })
+        .where(
+          and(
+            eq(tokenReservations.id, reservationId),
+            eq(tokenReservations.status, "pending"),
+            gt(tokenReservations.expiresAt, new Date())
+          )
+        )
+        .returning();
+
+      if (claimed.length === 0) return null;
+
+      const reservation = claimed[0];
+
+      // The held token number may no longer be free. expireStaleReservations shifts
+      // *appointments* down when an earlier hold lapses but leaves pending reservations
+      // where they are, so our token can collide with an appointment that moved into it.
+      // createAppointment only checks for competing reservations at that number, not
+      // appointments, so without this check we would insert a duplicate token and corrupt
+      // the queue for both patients. confirmTokenReservation does the same for walk-ins.
+      const [collision] = await tx
+        .select({ id: appointments.id })
+        .from(appointments)
+        .where(
+          and(
+            eq(appointments.scheduleId, reservation.scheduleId),
+            eq(appointments.tokenNumber, reservation.tokenNumber),
+            ne(appointments.status, "cancel")
+          )
+        );
+
+      let tokenNumber: number | undefined = reservation.tokenNumber;
+      if (collision) {
+        const [maxResult] = await tx
+          .select({ maxToken: sql<number>`COALESCE(MAX(token_number), 0)` })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.scheduleId, reservation.scheduleId),
+              ne(appointments.status, "cancel")
+            )
+          );
+        tokenNumber = (maxResult?.maxToken || 0) + 1;
+      }
+
+      // Route through createAppointment rather than inserting directly: it owns the
+      // "already have an appointment for this schedule" check. Bypassing it would let a
+      // patient who started two online payments for the same schedule, and paid both,
+      // end up holding two tokens.
+      const appointment = await this.createAppointment(
+        { ...appointmentData, tokenNumber },
+        tx
+      );
+
+      // Attach the appointment to the payment row that already exists and already holds
+      // the gateway's order id. Inserting a second row here would collide with the
+      // unique constraint on gateway_payment_id and roll the whole booking back.
+      await tx
+        .update(payments)
+        .set({ appointmentId: appointment.id, updatedAt: new Date() })
+        .where(eq(payments.id, paymentId));
+
+      return { appointment };
+    });
   }
 
   async cancelTokenReservation(reservationId: number, userId: number): Promise<void> {

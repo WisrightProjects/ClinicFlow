@@ -44,9 +44,14 @@ export type PaymentMethod = (typeof paymentMethods)[number];
 /**
  * Which processor actually handled a payment.
  * `dummy` = simulated online payment (Phase 1); no money moved, never refundable.
+ * `hdfc`  = HDFC SmartGateway (Phase 2); real money, so genuinely refundable.
  */
-export const paymentGateways = ["wallet", "dummy", "razorpay"] as const;
+export const paymentGateways = ["wallet", "dummy", "razorpay", "hdfc"] as const;
 export type PaymentGateway = (typeof paymentGateways)[number];
+
+// HDFC's own status vocabulary deliberately does NOT live here. It belongs to the one
+// server module that speaks their protocol (server/services/hdfc-gateway.ts); this file
+// is bundled into the client, which never needs it.
 
 /** Lifecycle of a payment attempt. */
 export const paymentStatuses = ["created", "success", "failed"] as const;

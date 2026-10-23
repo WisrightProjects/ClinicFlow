@@ -67,6 +67,51 @@ export default function BookingHistoryPage() {
   const [doctorArrivals, setDoctorArrivals] = useState<Record<string, boolean>>({});
   const [cancelReason, setCancelReason] = useState('');
   const [cancellingId, setCancellingId] = useState<number | null>(null);
+  // Payment gateway outcome. The server redirects the patient back here from HDFC with
+  // ?payment=..., and without this the page would render silently however the payment
+  // went — including a failure the patient is never told about.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get('payment');
+    if (!outcome) return;
+
+    const token = params.get('token');
+    const messages: Record<string, { title: string; description: string; variant?: 'destructive' }> = {
+      success: {
+        title: 'Payment successful ✅',
+        description: token
+          ? `Your appointment is confirmed. Token #${token}.`
+          : 'Your appointment is confirmed.',
+      },
+      pending: {
+        title: 'Payment is still processing',
+        description:
+          'Your bank has not confirmed yet. This page will show your token once it does — you will not be charged twice.',
+      },
+      failed: {
+        title: 'Payment was not completed',
+        description: 'No token was booked. If any amount was debited it will be returned to your wallet.',
+        variant: 'destructive',
+      },
+      unknown: {
+        title: "We could not confirm that payment",
+        description: 'Please check your appointments and wallet before trying again.',
+        variant: 'destructive',
+      },
+    };
+
+    const message = messages[outcome];
+    if (message) toast(message);
+
+    // Clear only what we consumed, so a refresh does not replay the message and any
+    // other query parameter on the page survives.
+    params.delete('payment');
+    params.delete('token');
+    params.delete('status');
+    const query = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''));
+  }, [toast]);
+
   // Ref to track if we've already fetched arrivals
   const arrivedFetchedRef = useRef(false);
   // Ref to store interval ID

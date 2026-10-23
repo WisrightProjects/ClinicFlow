@@ -6,9 +6,39 @@ import PatientFooter from '@/components/PatientFooter';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLocation } from 'wouter';
+import { useToast } from '@/hooks/use-toast';
 
 export default function PatientWallet() {
   const [, setLocation] = useLocation();
+  const { toast } = useToast();
+
+  // The server sends a patient here when their payment succeeded but the token could not
+  // be created — the hold expired, or they already had an appointment. They are owed an
+  // explanation, otherwise the balance simply changes with no stated reason.
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('payment') !== 'refunded') return;
+
+    const reasons: Record<string, string> = {
+      hold_expired: 'Your token was released before the payment finished, so the amount is back in your wallet.',
+      duplicate_booking: 'You already had an appointment for that schedule, so the amount is back in your wallet.',
+      booking_failed: 'We could not confirm your token, so the amount is back in your wallet.',
+      already_settled: 'That payment was already processed — the amount is in your wallet.',
+    };
+
+    toast({
+      title: 'Amount added to your wallet',
+      description:
+        reasons[params.get('reason') || ''] ??
+        'Your booking could not be completed, so the amount is back in your wallet.',
+    });
+
+    // Clear only what we consumed, so any other query parameter survives.
+    params.delete('payment');
+    params.delete('reason');
+    const query = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''));
+  }, [toast]);
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">

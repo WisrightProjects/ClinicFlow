@@ -93,7 +93,7 @@ export default function PatientBookingPage() {
 
   // Booking fee is computed by the server; the client only displays it.
   const { data: feeData, isLoading: isLoadingFee } = useQuery<
-    BookingFee & { onlinePaymentEnabled: boolean }
+    BookingFee & { onlinePaymentEnabled: boolean; liveGateway?: boolean }
   >({
     queryKey: ["/api/booking/fee"],
     enabled: !!user,
@@ -108,6 +108,9 @@ export default function PatientBookingPage() {
   const walletBalance = parseFloat(walletSummary?.wallet?.balance ?? "0");
   const bookingTotal = feeData?.total ?? 0;
   const onlinePaymentEnabled = feeData?.onlinePaymentEnabled ?? false;
+  // True once a real gateway is collecting money. The online path then leaves the app
+  // for HDFC's checkout instead of completing instantly.
+  const liveGateway = feeData?.liveGateway ?? false;
   const canPayFromWallet = !!feeData && walletBalance >= bookingTotal;
 
   // The dialog can open before the fee/wallet queries resolve, when canPayFromWallet is
@@ -172,8 +175,36 @@ export default function PatientBookingPage() {
       const appointmentDate = new Date(selectedDate);
       appointmentDate.setHours(hours, minutes, 0, 0);
 
-      // Give the simulated gateway a moment so it reads like a real payment rather
-      // than an instant jump. Purely cosmetic — remove once the real gateway lands.
+      // Real gateway: hold a token, then hand the patient to HDFC's checkout. The
+      // appointment is created by the server once HDFC confirms payment, not here — so
+      // this branch navigates away and never resolves into onSuccess.
+      if (method === "online" && liveGateway) {
+        const res = await apiRequest("POST", "/api/payments/online/initiate", {
+          doctorId: parseInt(doctorId!),
+          date: appointmentDate.toISOString(),
+          clinicId: schedule.clinicId,
+          scheduleId: schedule.id,
+          isOnBehalf: onBehalf,
+          guestName: onBehalf ? guestName : undefined,
+          guestPhone: onBehalf ? guestPhone : undefined,
+        });
+        const session = await res.json();
+        if (!session?.paymentUrl) {
+          throw new Error("Could not start the payment. Please try again.");
+        }
+        window.location.href = session.paymentUrl;
+
+        // Hold the payment screen while the browser navigates away, but do not wait
+        // forever: pressing Back on Android returns here without a reload, and a promise
+        // that never settles would leave the dialog stuck with no way to retry.
+        await new Promise((resolve) => setTimeout(resolve, 8000));
+        throw new Error(
+          "Payment was not completed. If money was debited it will be added to your wallet shortly."
+        );
+      }
+
+      // Simulated gateway: give it a moment so it reads like a real payment rather
+      // than an instant jump. Purely cosmetic.
       if (method === "online") {
         await new Promise((resolve) => setTimeout(resolve, 1600));
       }
