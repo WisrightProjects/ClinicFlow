@@ -1,4 +1,4 @@
-import express, { Express } from 'express';
+import express, { Express, type Request, type Response } from 'express';
 import { createServer, Server } from 'http';
 import cors from 'cors';
 import { storage, getTokens } from './storage';
@@ -10,6 +10,8 @@ import { notificationService } from './services/notification';
 import { ETAService } from './services/eta';
 import { walletService } from './services/wallet';
 import { paymentService } from './services/payment';
+import { hdfcGateway, HdfcGatewayError } from './services/hdfc-gateway';
+import { validateBookingEligibility, validateOnBehalfFields } from './services/booking-validation';
 import { isScheduleEnded, userCanResolveSchedule, resolveEndedScheduleTokens } from './services/schedule-resolution';
 import { db } from './db';
 import { eq, and, sql, isNull, not, gte } from 'drizzle-orm';
@@ -646,6 +648,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // With a real gateway live, online bookings must go through /api/payments/online/initiate
+      // so money is actually collected. This route's online path is the simulator, which
+      // books for free — a client holding a stale /api/booking/fee response (staleTime is
+      // Infinity) would otherwise still arrive here and get a token for nothing.
+      if (paymentMethod === 'online' && paymentService.isLiveGatewayActive()) {
+        return res.status(409).json({
+          message: 'Please refresh the page and try booking again.',
+          code: 'USE_GATEWAY_CHECKOUT',
+        });
+      }
+
       // Wallet bookings need funds. This is an early bail-out for a friendly message —
       // the authoritative check runs under a row lock inside the booking transaction.
       if (paymentMethod === 'wallet') {
@@ -751,7 +764,153 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({
       ...paymentService.getBookingFee(),
       onlinePaymentEnabled: paymentService.isOnlinePaymentEnabled(),
+      liveGateway: paymentService.isLiveGatewayActive(),
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // HDFC SmartGateway (Phase 2). See PAYMENT_FLOW_PLAN.md §13.
+  // ---------------------------------------------------------------------------
+
+  // Step 1: hold a token and open a payment session. Collects no money — it returns the
+  // URL the patient is sent to. The booking is only created once HDFC confirms payment.
+  app.post("/api/payments/online/initiate", async (req, res) => {
+    if (!req.user || req.user.role !== 'patient') return res.sendStatus(403);
+
+    if (!paymentService.isLiveGatewayActive()) {
+      return res.status(400).json({ message: 'Online payment is currently unavailable.' });
+    }
+
+    try {
+      const doctorId = Number(req.body.doctorId);
+      const clinicId = Number(req.body.clinicId);
+      const scheduleId = Number(req.body.scheduleId);
+      if (!doctorId || !clinicId || !scheduleId || !req.body.date) {
+        return res.status(400).json({ message: 'doctorId, clinicId, scheduleId and date are required' });
+      }
+
+      const appointmentDate = new Date(req.body.date);
+      if (isNaN(appointmentDate.getTime())) {
+        return res.status(400).json({ message: 'Invalid date' });
+      }
+
+      // patientId makes this reject duplicates and in-flight payments too — before the
+      // gateway takes any money, rather than refunding it afterwards.
+      const check = await validateBookingEligibility({
+        doctorId,
+        clinicId,
+        scheduleId,
+        date: appointmentDate,
+        patientId: req.user.id,
+      });
+      if (!check.ok) return res.status(400).json({ message: check.message });
+
+      const onBehalfError = validateOnBehalfFields(req.body);
+      if (onBehalfError) return res.status(400).json({ message: onBehalfError });
+
+      const result = await paymentService.initiateHdfcBooking({
+        patient: req.user,
+        schedule: check.schedule,
+        date: appointmentDate,
+        isOnBehalf: Boolean(req.body.isOnBehalf),
+        guestName: req.body.isOnBehalf ? req.body.guestName?.trim() : undefined,
+        guestPhone: req.body.isOnBehalf ? req.body.guestPhone?.trim() : undefined,
+      });
+
+      res.status(201).json(result);
+    } catch (error) {
+      console.error('Error initiating online payment:', error);
+      // Only a genuine gateway failure is a 502. Reporting our own database or
+      // reservation errors as "could not reach the gateway" sends debugging the wrong way.
+      if (error instanceof HdfcGatewayError) {
+        return res.status(502).json({ message: 'Could not reach the payment gateway. Please try again.' });
+      }
+      res.status(500).json({ message: 'Could not start the payment. Please try again.' });
+    }
+  });
+
+  // Step 2a: the patient's browser comes back here from HDFC.
+  //
+  // The session cookie is NOT available: auth.ts sets sameSite "lax", which browsers do
+  // not send on a cross-site POST. So this never reads req.user — it identifies the order
+  // by order_id alone, settles it, and redirects to a same-site page where the patient's
+  // session works normally again.
+  const handleHdfcReturn = async (req: Request, res: Response) => {
+    const orderId = String(req.body?.order_id || req.query?.order_id || '');
+    if (!orderId) return res.redirect('/appointments?payment=unknown');
+
+    try {
+      const result = await paymentService.settleHdfcOrder(orderId);
+      // Targets must be routes that exist in App.tsx — there is no /appointments/:id,
+      // and the wallet lives at /patient/wallet. Landing on a 404 straight after paying
+      // is the worst possible outcome here.
+      switch (result.outcome) {
+        case 'booked':
+          return res.redirect(
+            `/appointments?payment=success&token=${result.appointment.tokenNumber ?? ''}`
+          );
+        case 'refunded_to_wallet':
+          return res.redirect(
+            `/patient/wallet?payment=refunded&reason=${encodeURIComponent(result.reason)}`
+          );
+        case 'pending':
+          // Still authorizing. Telling the patient it failed is what makes them pay a
+          // second time, so say it is in progress and let the sweep finish it.
+          return res.redirect('/appointments?payment=pending');
+        case 'not_paid':
+          return res.redirect(`/appointments?payment=failed&status=${encodeURIComponent(result.status)}`);
+        case 'already_settled':
+          // The webhook beat the browser here. Report what it actually did — claiming
+          // "booked" after a wallet refund sends the patient hunting for a token that
+          // was never created.
+          if (result.settledAs === 'refunded') {
+            return res.redirect('/patient/wallet?payment=refunded&reason=already_settled');
+          }
+          return res.redirect(
+            result.settledAs === 'booked'
+              ? '/appointments?payment=success'
+              : '/appointments?payment=pending'
+          );
+        default:
+          return res.redirect('/appointments?payment=unknown');
+      }
+    } catch (error) {
+      // Gateway unreachable. The order stays at 'created' and the sweep will retry, so
+      // tell the patient it is in progress rather than that it failed.
+      console.error('Error handling HDFC return:', error);
+      return res.redirect('/appointments?payment=pending');
+    }
+  };
+
+  // HDFC's sample sends the result as query parameters, but its own handlers accept both
+  // verbs, so both are wired up.
+  app.get("/api/payments/hdfc/return", handleHdfcReturn);
+  app.post("/api/payments/hdfc/return", handleHdfcReturn);
+
+  // Step 2b: HDFC tells us server-to-server. Authenticated with HTTP Basic using
+  // credentials we chose and entered in their dashboard.
+  app.post("/api/payments/hdfc/webhook", async (req, res) => {
+    if (!hdfcGateway.verifyWebhookAuth(req.headers.authorization)) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    // The body is a hint, not evidence — only the order id is taken from it. What
+    // actually happened is read back from HDFC inside settleHdfcOrder.
+    const orderId = String(
+      req.body?.content?.order?.order_id || req.body?.order_id || ''
+    );
+    if (!orderId) return res.status(400).json({ message: 'order_id missing' });
+
+    try {
+      const result = await paymentService.settleHdfcOrder(orderId);
+      console.log(`[hdfc] webhook ${orderId}: ${result.outcome}`);
+      // Always 200 on a handled webhook so HDFC stops retrying.
+      res.json({ received: true });
+    } catch (error) {
+      console.error('Error handling HDFC webhook:', error);
+      // 500 asks HDFC to retry — correct when the failure was ours, not theirs.
+      res.status(500).json({ message: 'Could not settle order' });
+    }
   });
 
 

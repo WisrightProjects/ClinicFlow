@@ -4,6 +4,7 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { createServer } from "net";
 import { storage } from "./storage";
+import { paymentService } from "./services/payment";
 
 // Function to find an available port
 async function findAvailablePort(startPort: number): Promise<number> {
@@ -96,6 +97,15 @@ const port = await findAvailablePort(desiredPort);
       await storage.expireStaleReservations();
     } catch (err) {
       console.error('Error expiring stale reservations:', err);
+    }
+
+    // Backstop for online payments whose callbacks never arrived — a patient who paid by
+    // UPI and closed the app, or a webhook that was lost. Without this, money is
+    // collected and nothing is given back. No-op unless the live gateway is configured.
+    try {
+      await paymentService.sweepStaleHdfcOrders();
+    } catch (err) {
+      console.error('Error sweeping stale gateway orders:', err);
     }
   }, 60_000);
 })();

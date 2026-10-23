@@ -1,5 +1,5 @@
 import { relations, sql } from "drizzle-orm";
-import { boolean, decimal, index, integer, pgTable, serial, text, timestamp, varchar, date } from "drizzle-orm/pg-core";
+import { boolean, decimal, index, integer, pgTable, serial, text, timestamp, uniqueIndex, varchar, date } from "drizzle-orm/pg-core";
 import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -269,7 +269,21 @@ export const walletTransactions = pgTable("wallet_transactions", {
   status: varchar("status", { length: 20 }).default("completed"), // completed, pending, failed
   metadata: text("metadata"), // JSON field for additional data
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => ({
+  // What makes a gateway refund single-shot: the credit carries the gateway order id as
+  // its reference, so a retried webhook or an overlapping sweep hits a duplicate key
+  // instead of paying the patient twice.
+  //
+  // Declared here, not only in migration 0039, because this file is the source of truth
+  // and dev databases are built with `db:push` — which reads only this. Without it the
+  // duplicate-key recovery in creditUnbookedPayment would never fire in dev, and a
+  // `db:generate` would later see the index as drift and try to drop it.
+  //
+  // Partial so the many rows with a NULL reference_id do not collide with each other.
+  referenceIdUnique: uniqueIndex("wallet_transactions_reference_id_unique")
+    .on(table.referenceId)
+    .where(sql`${table.referenceId} IS NOT NULL`),
+}));
 
 // Payment attempts — one row per booking payment, whatever the method.
 // `gateway` is what separates a real payment from a simulated one: rows with
@@ -280,7 +294,7 @@ export const payments = pgTable("payments", {
   patientId: integer("patient_id").notNull().references(() => users.id),
   scheduleId: integer("schedule_id").references(() => doctorSchedules.id),
   method: varchar("method", { length: 20 }).notNull(),          // wallet | online
-  gateway: varchar("gateway", { length: 30 }).notNull(),        // wallet | dummy | razorpay
+  gateway: varchar("gateway", { length: 30 }).notNull(),        // wallet | dummy | razorpay | hdfc
   amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
   platformFee: decimal("platform_fee", { precision: 10, scale: 2 }).notNull(),
   gstAmount: decimal("gst_amount", { precision: 10, scale: 2 }).notNull(),
@@ -288,6 +302,13 @@ export const payments = pgTable("payments", {
   // Populated by a real gateway in Phase 2; unique so a replayed webhook cannot
   // be processed twice. Null for wallet and dummy payments.
   gatewayPaymentId: varchar("gateway_payment_id", { length: 100 }).unique(),
+  // The order id WE generate and hand to the gateway. Unique so a replayed callback can
+  // never open a second order, and random (never sequential) so one patient's order id
+  // cannot be used to guess another's. Null for wallet and dummy payments.
+  gatewayOrderId: varchar("gateway_order_id", { length: 21 }).unique(),
+  // The token held while the patient is away paying. Null for wallet and dummy payments,
+  // which are instant and need no hold.
+  reservationId: integer("reservation_id").references(() => tokenReservations.id),
   walletTransactionId: integer("wallet_transaction_id").references(() => walletTransactions.id),
   metadata: text("metadata"), // JSON
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
@@ -295,6 +316,19 @@ export const payments = pgTable("payments", {
 }, (table) => ({
   patientIdx: index("payments_patient_idx").on(table.patientId),
   appointmentIdx: index("payments_appointment_idx").on(table.appointmentId),
+  // The sweep scans for unsettled gateway rows oldest-first. Partial, because it only
+  // ever wants hdfc rows — a full index would be maintained on every wallet and dummy
+  // payment to serve a query that can never return one.
+  hdfcUnsettledIdx: index("payments_hdfc_unsettled_idx")
+    .on(table.createdAt)
+    .where(sql`${table.gateway} = 'hdfc' AND ${table.status} IN ('created', 'failed')`),
+  // At most one payment attempt in flight per patient per schedule. The application
+  // checks this too, but that check is an unlocked read: two taps can interleave and
+  // produce two held tokens and two gateway orders. Partial on 'created' so it stops
+  // blocking retries as soon as the attempt settles or is abandoned.
+  oneInFlightPerSchedule: uniqueIndex("payments_one_inflight_per_schedule")
+    .on(table.patientId, table.scheduleId)
+    .where(sql`${table.gateway} = 'hdfc' AND ${table.status} = 'created'`),
 }));
 
 // Refund Tracking for Appointments
