@@ -42,6 +42,19 @@ const SETTLEABLE_STATUSES = ['token_started', 'hold', 'scheduled'];
 // Schedule start/end times are stored as clinic-local IST "HH:MM" (matches ETAService).
 const IST_OFFSET_MINUTES = 330; // UTC+5:30
 
+/**
+ * The IST calendar day an instant falls on, as "YYYY-MM-DD".
+ *
+ * Needed because the server runs in UTC: an appointment at 04:00 IST is 22:30 UTC the
+ * previous day, so comparing with `toDateString()` puts it on the wrong day and any
+ * "is this today?" test silently misclassifies early-morning slots.
+ */
+export function istDayKey(date: Date): string {
+  return new Date(date.getTime() + IST_OFFSET_MINUTES * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+}
+
 // Whether the schedule's end time (IST wall-clock on its date) is now in the past.
 // Server-side guard — never trust a client "ended" flag. Must interpret endTime as IST,
 // otherwise a UTC-hosted server reads "17:00" as 17:00 UTC (22:30 IST) and wrongly rejects.

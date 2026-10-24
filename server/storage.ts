@@ -40,7 +40,7 @@ import {
   type Payment
 } from "@shared/schema";
 import { DuplicateBookingError } from "./errors";
-import { eq, or, and, sql, inArray, lte, gte, count, not, gt, lt, getTableColumns, isNotNull, isNull, ne, max } from "drizzle-orm";
+import { eq, or, and, sql, inArray, lte, gte, count, not, gt, lt, desc, getTableColumns, isNotNull, isNull, ne, max } from "drizzle-orm";
 import { db } from "./db";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
@@ -2500,10 +2500,14 @@ export class DatabaseStorage implements IStorage {
       }
 
       // Get patient's appointments
+      // Newest first. Without an order these come back in heap order, so a patient with
+      // months of history would find next week's booking — and its Cancel button — at an
+      // arbitrary position in the list.
       const appointmentsResult = await db
         .select()
         .from(appointments)
-        .where(and(...whereConditions));
+        .where(and(...whereConditions))
+        .orderBy(desc(appointments.date));
 
       console.log('Patient appointments:', JSON.stringify(appointmentsResult, null, 2));
 
