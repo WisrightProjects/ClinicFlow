@@ -736,7 +736,27 @@ UPI adds a second layer: the payment page hands off to `upi://` / `intent://` UR
 GPay or PhonePe. WebViews do not handle those by default. **This must be tested on a real
 device early** — the result decides whether more native work is needed.
 
-> ### ⚠️ The host list almost certainly needs widening — verify it in UAT
+> ### ✅ Confirmed on a real device (24 Oct) — and the first host list was wrong
+>
+> An in-app UAT payment opened in **Chrome**, exactly as predicted. The cause was more
+> basic than expected: checkout does not run on the `smartgateway.` host at all.
+>
+> | | |
+> |---|---|
+> | Session API | `smartgateway.hdfcuat.bank.in` |
+> | **Checkout page** | **`gateway.hdfcuat.bank.in`** |
+>
+> Different hostname, so the original two-entry list never matched and every payment was
+> handed to the system browser. The list is now **wildcards** covering `*.hdfc.bank.in`,
+> `*.hdfcuat.bank.in`, `*.hdfcbank.com` and the two juspay domains, since checkout also
+> hops to the issuing bank and to a 3DS host and those cannot be enumerated in advance.
+>
+> **Still open: UPI app handoff.** `upi://` and `intent://` links are not HTTP, so
+> `allowNavigation` does not cover them and a WebView will not open GPay or PhonePe
+> without native handling. Card and net banking should work after this fix; the UPI
+> buttons may not. Verify on the next device build.
+
+> ### ⚠️ Original note — superseded by the result above
 >
 > The two SmartGateway hosts cover only the **first hop**. Checkout does not stay on
 > them:
