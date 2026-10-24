@@ -23,7 +23,18 @@ const config: CapacitorConfig = {
     //
     // juspay is included because SmartGateway is Juspay-operated and parts of the
     // checkout are served from their domains.
+    // Capacitor's HostMask matches exactly ONE label in place of the `*`, so
+    // `*.hdfcuat.bank.in` covers `gateway.hdfcuat.bank.in` but not a deeper host. The
+    // hosts actually observed in a UAT payment are therefore listed explicitly as well,
+    // so the flow does not depend on the wildcard behaving as hoped.
     allowNavigation: [
+      // Observed on a real device: checkout runs here, and the session API here.
+      'gateway.hdfcuat.bank.in',
+      'smartgateway.hdfcuat.bank.in',
+      // The production equivalents, for when live credentials are issued.
+      'gateway.hdfc.bank.in',
+      'smartgateway.hdfc.bank.in',
+      // Catch-alls for the onward hops — issuing bank, 3DS/ACS, Juspay-served assets.
       '*.hdfc.bank.in',
       '*.hdfcuat.bank.in',
       '*.hdfcbank.com',
