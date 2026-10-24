@@ -15,13 +15,31 @@ const config: CapacitorConfig = {
     // booking completes somewhere they cannot see. Compiled into the APK, so changing
     // it requires a new build, not a web redeploy.
     //
-    // ⚠️ INCOMPLETE — these two cover only the first hop. Net banking navigates to the
-    // issuing bank's own domain and cards to a 3DS/ACS host, neither of which matches.
-    // The real list has to be captured from an actual UAT payment on a device before
-    // the AAB is built. See PAYMENT_FLOW_PLAN.md §16.1.
+    // Wildcards, not exact hosts. A UAT payment on a real device showed checkout running
+    // on `gateway.hdfcuat.bank.in` — NOT the `smartgateway.` host the session API lives
+    // on, which is why the first version of this list failed and the page opened in
+    // Chrome. Checkout also hops onward to the issuing bank for net banking and to a
+    // 3DS/ACS host for cards, so enumerating exact hostnames is not realistic.
+    //
+    // juspay is included because SmartGateway is Juspay-operated and parts of the
+    // checkout are served from their domains.
+    // Capacitor's HostMask matches exactly ONE label in place of the `*`, so
+    // `*.hdfcuat.bank.in` covers `gateway.hdfcuat.bank.in` but not a deeper host. The
+    // hosts actually observed in a UAT payment are therefore listed explicitly as well,
+    // so the flow does not depend on the wildcard behaving as hoped.
     allowNavigation: [
+      // Observed on a real device: checkout runs here, and the session API here.
+      'gateway.hdfcuat.bank.in',
       'smartgateway.hdfcuat.bank.in',
+      // The production equivalents, for when live credentials are issued.
+      'gateway.hdfc.bank.in',
       'smartgateway.hdfc.bank.in',
+      // Catch-alls for the onward hops — issuing bank, 3DS/ACS, Juspay-served assets.
+      '*.hdfc.bank.in',
+      '*.hdfcuat.bank.in',
+      '*.hdfcbank.com',
+      '*.juspay.in',
+      '*.juspay.io',
     ],
   },
   plugins: {
