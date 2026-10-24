@@ -59,6 +59,14 @@ export function PaymentOptions({
             <p className="text-xs text-muted-foreground pt-1">
               This is a booking fee only. The doctor's consultation fee is paid at the clinic.
             </p>
+            {/* Stated BEFORE payment, on purpose. The cancel dialog already says the money
+                goes to the wallet, but by then the patient has paid expecting a refund —
+                and wallet credit offered without prior consent is the part of a store-credit
+                policy that gets challenged. Say it while they can still choose not to pay. */}
+            <p className="text-xs text-muted-foreground">
+              If you cancel, this amount is credited to your Clinik wallet for future
+              bookings — it is not refunded to your bank account.
+            </p>
           </>
         )}
       </div>
