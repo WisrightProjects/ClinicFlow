@@ -5,15 +5,14 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
 import { Progress } from "@/components/ui/progress";
-import { Clock, Ticket, CheckCircle2, XCircle, RefreshCw } from "lucide-react";
+import { Clock, Ticket, CheckCircle2 } from "lucide-react";
 import { AppointmentStatusBadge } from "@/components/appointment-status-badge";
 import { ETADisplay } from "@/components/eta-display";
 import { NavigationButtons } from "@/components/navigation-buttons";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
+import { CancelAppointmentDialog } from "@/components/cancel-appointment-dialog";
+import { invalidateWalletQueries } from "@/utils/wallet-utils";
 import { useToast } from "@/hooks/use-toast";
 import React, { useEffect, useState, useRef, useCallback } from "react";
 
@@ -64,9 +63,10 @@ const calculateTokensAhead = (
 export default function BookingHistoryPage() {
   // State to store doctor arrival status
   const { toast } = useToast();
-  const [doctorArrivals, setDoctorArrivals] = useState<Record<string, boolean>>({});
-  const [cancelReason, setCancelReason] = useState('');
+  // Which appointment's cancel dialog is open. Owned here, not in the dialog, because
+  // only this component knows when the mutation actually succeeded.
   const [cancellingId, setCancellingId] = useState<number | null>(null);
+  const [doctorArrivals, setDoctorArrivals] = useState<Record<string, boolean>>({});
   // Payment gateway outcome. The server redirects the patient back here from HDFC with
   // ?payment=..., and without this the page would render silently however the payment
   // went — including a failure the patient is never told about.
@@ -128,7 +128,8 @@ export default function BookingHistoryPage() {
       // so without this the cancelled appointment stays in their cache (staleTime is
       // Infinity) and the schedule still shows as "Already Booked" on rebooking.
       queryClient.invalidateQueries({ queryKey: ['user-appointments'] });
-      setCancelReason('');
+      // The wallet changes on a refund, and the balance is shown in the header.
+      invalidateWalletQueries(queryClient);
       setCancellingId(null);
       toast({
         title: 'Appointment Cancelled',
@@ -479,56 +480,17 @@ export default function BookingHistoryPage() {
                                 {/* Patient self-cancellation — only before doctor arrives */}
                                 {appointment.status === "token_started" && !doctorHasArrived && (
                                   <div className="mt-3 pt-3 border-t">
-                                    <Dialog open={cancellingId === appointment.id} onOpenChange={(open) => {
-                                      if (!open) { setCancellingId(null); setCancelReason(''); }
-                                    }}>
-                                      <DialogTrigger asChild>
-                                        <Button
-                                          size="sm"
-                                          variant="outline"
-                                          className="w-full border-red-300 text-red-600 hover:bg-red-50"
-                                          onClick={() => setCancellingId(appointment.id)}
-                                        >
-                                          <XCircle className="h-4 w-4 mr-2" />
-                                          Cancel Appointment
-                                        </Button>
-                                      </DialogTrigger>
-                                      <DialogContent>
-                                        <DialogHeader>
-                                          <DialogTitle>Cancel Appointment</DialogTitle>
-                                          <DialogDescription>
-                                            Cancel your appointment with {appointment.doctor.name} (Token #{appointment.tokenNumber})
-                                          </DialogDescription>
-                                        </DialogHeader>
-                                        <div className="space-y-4">
-                                          <div>
-                                            <Label htmlFor="cancelReason">Reason for cancellation *</Label>
-                                            <Textarea
-                                              id="cancelReason"
-                                              value={cancelReason}
-                                              onChange={(e) => setCancelReason(e.target.value)}
-                                              placeholder="e.g., Unable to attend, feeling better, etc."
-                                              className="mt-1"
-                                            />
-                                          </div>
-                                          {appointment.isPaid && appointment.isRefundEligible && (
-                                            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
-                                              ₹{parseFloat(appointment.consultationFee || '21').toFixed(0)} will be refunded to your wallet.
-                                            </div>
-                                          )}
-                                        </div>
-                                        <DialogFooter>
-                                          <Button
-                                            onClick={() => cancelMutation.mutate({ appointmentId: appointment.id, reason: cancelReason })}
-                                            disabled={cancelMutation.isPending || !cancelReason.trim()}
-                                            className="bg-red-600 hover:bg-red-700"
-                                          >
-                                            {cancelMutation.isPending && <RefreshCw className="h-4 w-4 mr-2 animate-spin" />}
-                                            Confirm Cancellation
-                                          </Button>
-                                        </DialogFooter>
-                                      </DialogContent>
-                                    </Dialog>
+                                    <CancelAppointmentDialog
+                                      appointment={appointment}
+                                      isPending={cancelMutation.isPending}
+                                      open={cancellingId === appointment.id}
+                                      onOpenChange={(next) =>
+                                        setCancellingId(next ? appointment.id : null)
+                                      }
+                                      onConfirm={(appointmentId, reason) =>
+                                        cancelMutation.mutate({ appointmentId, reason })
+                                      }
+                                    />
                                   </div>
                                 )}
                               </div>
@@ -541,7 +503,10 @@ export default function BookingHistoryPage() {
                 )}
 
                 <div className="mt-8">
-                  <h2 className="text-xl font-semibold mb-4">Past Appointments</h2>
+                  {/* Holds upcoming bookings as well as finished ones, so the heading no
+                      longer says "Past" — a patient looking for next week's appointment
+                      would not think to look under that. */}
+                  <h2 className="text-xl font-semibold mb-4">Other Appointments</h2>
                   <div className="overflow-x-auto">
                     <table className="w-full">
                       <thead>
@@ -550,6 +515,7 @@ export default function BookingHistoryPage() {
                           <th className="text-left py-3 px-2 sm:py-4 sm:px-4">Doctor</th>
                           <th className="text-left py-3 px-2 sm:py-4 sm:px-4">Date & Time</th>
                           <th className="text-left py-3 px-2 sm:py-4 sm:px-4">Status</th>
+                          <th className="text-left py-3 px-2 sm:py-4 sm:px-4"></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -579,6 +545,28 @@ export default function BookingHistoryPage() {
                                 status={appointment.status}
                                 statusNotes={appointment.statusNotes}
                               />
+                            </td>
+                            <td className="py-3 px-2 sm:py-4 sm:px-4">
+                              {/* Only still-waiting bookings can be cancelled, which here
+                                  means future ones — a past appointment left at
+                                  token_started is history, not something to cancel. The
+                                  doctor-arrival rule is not consulted: it describes today,
+                                  and a doctor cannot have arrived for a future date. */}
+                              {appointment.status === "token_started" &&
+                                new Date(appointment.date) > new Date() && (
+                                  <CancelAppointmentDialog
+                                    appointment={appointment}
+                                    isPending={cancelMutation.isPending}
+                                    variant="compact"
+                                    open={cancellingId === appointment.id}
+                                    onOpenChange={(next) =>
+                                      setCancellingId(next ? appointment.id : null)
+                                    }
+                                    onConfirm={(appointmentId, reason) =>
+                                      cancelMutation.mutate({ appointmentId, reason })
+                                    }
+                                  />
+                                )}
                             </td>
                           </tr>
                         ))}

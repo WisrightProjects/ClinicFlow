@@ -12,18 +12,29 @@ import {
   type InsertAppointmentRefund,
   type WalletTransactionType
 } from '@shared/schema';
-import { eq, and, sql, desc, notInArray } from 'drizzle-orm';
+import { eq, and, or, isNull, sql, desc, notInArray } from 'drizzle-orm';
 import { notificationService } from './notification';
 import { paymentService } from './payment';
+
+/**
+ * Either the root db handle or a transaction handle from db.transaction().
+ * Lets the balance work join a caller's transaction so it rolls back with it.
+ * (Mirrors the same alias in storage.ts.)
+ */
+type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export class WalletService {
   
   /**
    * Create a wallet for a new patient
    */
-  async createWallet(patientId: number, initialBalance: number = 0): Promise<PatientWallet> {
+  async createWallet(
+    patientId: number,
+    initialBalance: number = 0,
+    exec: DbExecutor = db
+  ): Promise<PatientWallet> {
     try {
-      const [wallet] = await db.insert(patientWallets)
+      const [wallet] = await exec.insert(patientWallets)
         .values({
           patientId,
           balance: initialBalance.toFixed(2),
@@ -43,9 +54,9 @@ export class WalletService {
   /**
    * Get or create wallet for a patient
    */
-  async getOrCreateWallet(patientId: number): Promise<PatientWallet> {
+  async getOrCreateWallet(patientId: number, exec: DbExecutor = db): Promise<PatientWallet> {
     // Try to find existing wallet
-    const [existingWallet] = await db
+    const [existingWallet] = await exec
       .select()
       .from(patientWallets)
       .where(eq(patientWallets.patientId, patientId))
@@ -58,7 +69,7 @@ export class WalletService {
     // New wallets start empty. This used to seed ₹1000 of test credit, which would
     // have become real spendable money once payments went live. Existing balances are
     // left untouched — this only changes wallets created from now on.
-    return this.createWallet(patientId, 0);
+    return this.createWallet(patientId, 0, exec);
   }
 
   /**
@@ -70,7 +81,10 @@ export class WalletService {
   }
 
   /**
-   * Process a wallet transaction
+   * Process a wallet transaction.
+   *
+   * Pass `tx` when the caller is already inside a db.transaction() and the balance
+   * change must stand or fall with the caller's other writes.
    */
   async processTransaction(transactionData: {
     patientId: number;
@@ -82,7 +96,7 @@ export class WalletService {
     processedBy?: number;
     referenceId?: string;
     metadata?: any;
-  }): Promise<WalletTransaction> {
+  }, tx?: DbExecutor): Promise<WalletTransaction> {
     const { 
       patientId, 
       amount, 
@@ -96,8 +110,11 @@ export class WalletService {
     } = transactionData;
     
     try {
-      // Get or create wallet (outside tx — just to obtain wallet.id)
-      const wallet = await this.getOrCreateWallet(patientId);
+      // Just to obtain wallet.id. Runs on the caller's transaction when there is one:
+      // reaching for a second pooled connection while the caller holds one is how a
+      // saturated pool deadlocks, with every transaction waiting for a connection that
+      // only another transaction can release.
+      const wallet = await this.getOrCreateWallet(patientId, tx);
 
       // Determine credit vs debit (pure logic, no DB)
       const isCredit = [
@@ -108,10 +125,10 @@ export class WalletService {
         'wallet_topup'
       ].includes(transactionType);
 
-      // All balance work happens INSIDE the transaction with a row-level lock
-      return await db.transaction(async (tx) => {
+      // All balance work happens INSIDE a transaction with a row-level lock
+      const apply = async (exec: DbExecutor): Promise<WalletTransaction> => {
         // Lock the wallet row to prevent concurrent balance modifications
-        const [lockedWallet] = await tx.select()
+        const [lockedWallet] = await exec.select()
           .from(patientWallets)
           .where(eq(patientWallets.id, wallet.id))
           .for('update');
@@ -136,7 +153,7 @@ export class WalletService {
           }
         }
 
-        const [transaction] = await tx.insert(walletTransactions)
+        const [transaction] = await exec.insert(walletTransactions)
           .values({
             walletId: wallet.id,
             patientId,
@@ -154,7 +171,7 @@ export class WalletService {
           })
           .returning();
 
-        await tx.update(patientWallets)
+        await exec.update(patientWallets)
           .set({
             balance: newBalance.toFixed(2),
             totalEarned: totalEarned.toFixed(2),
@@ -166,7 +183,13 @@ export class WalletService {
         console.log(`Processed ${transactionType} transaction: ₹${amount} for patient ${patientId}. New balance: ₹${newBalance}`);
 
         return transaction;
-      });
+      };
+
+      // Join the caller's transaction when there is one. Opening a nested
+      // db.transaction() would check out a SECOND pooled connection, so these writes
+      // would commit independently of the caller's — the precise opposite of what
+      // passing `tx` is for — and could deadlock against the rows it already holds.
+      return tx ? await apply(tx) : await db.transaction(apply);
 
     } catch (error) {
       console.error('Error processing wallet transaction:', error);
@@ -427,35 +450,71 @@ export class WalletService {
 
     const consultationFee = parseFloat(appointment.consultationFee);
 
-    const walletTransaction = await this.processTransaction({
-      patientId: appointment.patientId,
-      amount: consultationFee,
-      transactionType: 'refund_schedule_cancel',
-      description: `Refund for cancelled appointment with Dr. ${doctorName} - ${cancelReason}`,
-      appointmentId: appointment.id,
-      scheduleId: appointment.scheduleId!,
-      processedBy: processedByUserId,
-      metadata: { originalAppointmentId: appointment.id, cancelReason, doctorName }
+    // One transaction, and the claim is its FIRST statement.
+    //
+    // `hasBeenRefunded` used to be read at the top of this function and set only at the
+    // bottom, AFTER the wallet credit had committed — so two cancels arriving together
+    // both passed the check and the patient was credited twice. Nothing in the database
+    // caught it either: appointment_refunds has no unique constraint on appointment_id,
+    // and the partial unique index on wallet_transactions.reference_id does not apply
+    // because this path leaves reference_id NULL. The wallet's own FOR UPDATE lock only
+    // serialises the arithmetic; it does not make the refund single-shot.
+    //
+    // The conditional UPDATE does: a second request blocks on this row until the first
+    // commits, then matches 0 rows and leaves without touching the wallet.
+    //
+    // Crediting inside the SAME transaction is what prevents the opposite failure. Claim
+    // first and credit afterwards, and a crash in between leaves the flag set on a refund
+    // that never paid out — money silently kept, with nothing to show it is owed. That is
+    // the stranding problem the HDFC wallet-credit flag had. Here a rollback takes the
+    // claim back with it.
+    //
+    // NULL-safe deliberately: has_been_refunded is nullable with a false default, so older
+    // rows can hold NULL, and `= false` alone would match none of them — silently refusing
+    // every legitimate refund on an older appointment.
+    const didRefund = await db.transaction(async (tx) => {
+      const claimed = await tx
+        .update(appointments)
+        .set({ hasBeenRefunded: true, refundAmount: consultationFee.toFixed(2) })
+        .where(and(
+          eq(appointments.id, appointment.id),
+          or(eq(appointments.hasBeenRefunded, false), isNull(appointments.hasBeenRefunded))
+        ))
+        .returning({ id: appointments.id });
+
+      // Lost the race — a concurrent cancel already refunded this appointment.
+      if (claimed.length === 0) return false;
+
+      const walletTransaction = await this.processTransaction({
+        patientId: appointment.patientId!,
+        amount: consultationFee,
+        transactionType: 'refund_schedule_cancel',
+        description: `Refund for cancelled appointment with Dr. ${doctorName} - ${cancelReason}`,
+        appointmentId: appointment.id,
+        scheduleId: appointment.scheduleId!,
+        processedBy: processedByUserId,
+        metadata: { originalAppointmentId: appointment.id, cancelReason, doctorName }
+      }, tx);
+
+      await tx.insert(appointmentRefunds).values({
+        appointmentId: appointment.id,
+        patientId: appointment.patientId!,
+        scheduleId: appointment.scheduleId!,
+        doctorId: appointment.doctorId!,
+        clinicId: appointment.clinicId!,
+        originalAmount: consultationFee.toFixed(2),
+        refundAmount: consultationFee.toFixed(2),
+        refundReason: cancelReason,
+        refundType: 'full',
+        walletTransactionId: walletTransaction.id,
+        processedBy: processedByUserId,
+        notes: 'Appointment cancelled by attender - full refund'
+      });
+
+      return true;
     });
 
-    await db.insert(appointmentRefunds).values({
-      appointmentId: appointment.id,
-      patientId: appointment.patientId,
-      scheduleId: appointment.scheduleId!,
-      doctorId: appointment.doctorId!,
-      clinicId: appointment.clinicId!,
-      originalAmount: consultationFee.toFixed(2),
-      refundAmount: consultationFee.toFixed(2),
-      refundReason: cancelReason,
-      refundType: 'full',
-      walletTransactionId: walletTransaction.id,
-      processedBy: processedByUserId,
-      notes: 'Appointment cancelled by attender - full refund'
-    });
-
-    await db.update(appointments)
-      .set({ hasBeenRefunded: true, refundAmount: consultationFee.toFixed(2) })
-      .where(eq(appointments.id, appointment.id));
+    if (!didRefund) return { refunded: false, refundAmount: 0 };
 
     try {
       await notificationService.createNotification({

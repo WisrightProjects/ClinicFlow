@@ -12,7 +12,7 @@ import { walletService } from './services/wallet';
 import { paymentService } from './services/payment';
 import { hdfcGateway, HdfcGatewayError } from './services/hdfc-gateway';
 import { validateBookingEligibility, validateOnBehalfFields } from './services/booking-validation';
-import { isScheduleEnded, userCanResolveSchedule, resolveEndedScheduleTokens } from './services/schedule-resolution';
+import { isScheduleEnded, userCanResolveSchedule, resolveEndedScheduleTokens, istDayKey } from './services/schedule-resolution';
 import { db } from './db';
 import { eq, and, sql, isNull, not, gte } from 'drizzle-orm';
 
@@ -938,15 +938,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: `Cannot cancel appointment with status: ${appointment.status}` });
       }
 
-      // Block cancellation once the doctor has arrived at the clinic
-      const arrivalStatus = await storage.getDoctorArrivalStatus(
-        appointment.doctorId,
-        appointment.clinicId,
-        new Date()
-      );
-      if (arrivalStatus?.hasArrived) {
-        return res.status(400).json({ message: 'Cancellation is not allowed after the doctor has arrived at the clinic.' });
+      // Three cases, and they are genuinely different.
+      //
+      // The day comes from the SCHEDULE, not from appointment.date. That column is
+      // populated from a client-supplied value which is only ever validated to its UTC
+      // day, so a patient could book today's queue with date "<today>T20:00:00Z" — a
+      // normal token, but 01:30 IST tomorrow. Deciding the branch from that would put a
+      // live booking in the "future" case and skip the arrival guard entirely: cancel
+      // and full refund after the doctor has arrived. doctorSchedules.date is a plain
+      // "YYYY-MM-DD" the server owns, so it cannot be steered from outside.
+      const schedule = await storage.getDoctorSchedule(appointment.scheduleId);
+      if (!schedule) {
+        return res.status(400).json({ message: 'Schedule not found for this appointment' });
       }
+
+      // Normalised deliberately. The whole guard below rests on this being a plain
+      // "YYYY-MM-DD" string: the three branches are chosen by `<` and `===`, and anything
+      // that is neither falls through to "future, always allowed" — i.e. it fails OPEN and
+      // the doctor-arrival check becomes dead code. `date` is typed string, but that is a
+      // claim about the column, not about what the driver hands back: node-postgres parses
+      // OID 1082 into a Date by default, and only drizzle's type-parser override keeps it a
+      // string. An authorization gate should not rest on a transitive dependency.
+      const appointmentDay = String(schedule.date).slice(0, 10);
+      const today = istDayKey(new Date());
+
+      if (appointmentDay < today) {
+        // Past. A slot left at token_started because nobody marked it no_show is history,
+        // not something to cancel — and refunding it would hand money back to a patient
+        // who simply did not turn up. There is no automatic sweep that settles these, so
+        // without this they linger indefinitely and stay cancellable forever.
+        return res.status(400).json({
+          message: 'This appointment has already passed and can no longer be cancelled.',
+        });
+      }
+
+      if (appointmentDay === today) {
+        // Today. The arrival rule applies: once the doctor is at the clinic, the queue is
+        // running and a cancellation would disrupt it.
+        const arrivalStatus = await storage.getDoctorArrivalStatus(
+          appointment.doctorId,
+          appointment.clinicId,
+          new Date()
+        );
+        if (arrivalStatus?.hasArrived) {
+          return res.status(400).json({ message: 'Cancellation is not allowed after the doctor has arrived at the clinic.' });
+        }
+      }
+
+      // Future: always allowed. A doctor cannot have arrived for a day that has not
+      // happened, and the patient has paid real money for a slot they should be able to
+      // release.
 
       await storage.updateAppointmentStatus(appointmentId, 'cancel', reason.trim());
 
