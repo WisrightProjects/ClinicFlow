@@ -5,6 +5,7 @@ import session from "express-session";
 import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { storage } from "./storage";
+import { sanitizeUser } from './sanitize-user';
 import { User as SelectUser, insertUserSchema } from "@shared/schema";
 import { smsService } from "./services/sms";
 
@@ -248,7 +249,10 @@ export function setupAuth(app: Express) {
 
   app.get("/api/user", (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
-    res.json(req.user);
+    // Sanitized even though it is the caller's own row: this response is read by the
+    // browser on every session check and is echoed into the request log, so the scrypt
+    // hashes would sit in both. Nothing in the client reads them.
+    res.json(sanitizeUser(req.user as Record<string, any>));
   });
 
   app.patch("/api/user", async (req, res) => {
@@ -384,7 +388,7 @@ export function setupAuth(app: Express) {
       // Login the user
       req.login(user, (err) => {
         if (err) return next(err);
-        res.json(user);
+        res.json(sanitizeUser(user as Record<string, any>));
       });
     } catch (error) {
       console.error("Error verifying OTP:", error);
@@ -577,7 +581,7 @@ export function setupAuth(app: Express) {
       // Login the user
       req.login(user, (err) => {
         if (err) return next(err);
-        res.json(user);
+        res.json(sanitizeUser(user as Record<string, any>));
       });
     } catch (error) {
       console.error("Firebase verification error:", error);
@@ -666,7 +670,7 @@ export function setupAuth(app: Express) {
           console.error("Session creation error:", err);
           return res.status(500).json({ message: "Failed to create session" });
         }
-        res.json({ success: true, user });
+        res.json({ success: true, user: sanitizeUser(user as Record<string, any>) });
       });
     } catch (error) {
       console.error("Patient login error:", error);
@@ -720,7 +724,7 @@ export function setupAuth(app: Express) {
           console.error("Session creation error:", err);
           return res.status(500).json({ message: "Failed to create session" });
         }
-        res.json({ success: true, user });
+        res.json({ success: true, user: sanitizeUser(user as Record<string, any>) });
       });
     } catch (error) {
       console.error("Staff login error:", error);
