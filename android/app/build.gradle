@@ -1,5 +1,15 @@
 apply plugin: 'com.android.application'
 
+// Signing credentials, read from android/keystore.properties when it exists.
+// That file is gitignored and holds the release keystore passwords, so a signed build
+// needs no secrets on the command line (where they reach the shell history) and none in
+// the repository. Environment variables still win when set, which is how CI would do it.
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file('keystore.properties')
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
 android {
     namespace "com.wisright.clinikflow"
     compileSdk rootProject.ext.compileSdkVersion
@@ -7,8 +17,8 @@ android {
         applicationId "com.wisright.clinikflow"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "1.0"
+        versionCode 3
+        versionName "1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -18,10 +28,10 @@ android {
     }
     signingConfigs {
         release {
-            storeFile file(System.getenv('KEYSTORE_PATH') ?: 'clinik-release.keystore')
-            storePassword System.getenv('KEYSTORE_PASSWORD') ?: ''
-            keyAlias System.getenv('KEY_ALIAS') ?: 'clinik'
-            keyPassword System.getenv('KEY_PASSWORD') ?: ''
+            storeFile file(System.getenv('KEYSTORE_PATH') ?: keystoreProps.getProperty('storeFile', 'clinik-release.keystore'))
+            storePassword System.getenv('KEYSTORE_PASSWORD') ?: keystoreProps.getProperty('storePassword', '')
+            keyAlias System.getenv('KEY_ALIAS') ?: keystoreProps.getProperty('keyAlias', 'clinik')
+            keyPassword System.getenv('KEY_PASSWORD') ?: keystoreProps.getProperty('keyPassword', '')
         }
     }
     buildTypes {
