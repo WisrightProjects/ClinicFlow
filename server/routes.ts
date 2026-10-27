@@ -13,6 +13,7 @@ import { paymentService } from './services/payment';
 import { hdfcGateway, HdfcGatewayError } from './services/hdfc-gateway';
 import { validateBookingEligibility, validateOnBehalfFields } from './services/booking-validation';
 import { isScheduleEnded, userCanResolveSchedule, resolveEndedScheduleTokens, istDayKey } from './services/schedule-resolution';
+import { sanitizeUser, sanitizeUsers, stripSensitive, stripForPublic } from './sanitize-user';
 import { db } from './db';
 import { eq, and, sql, isNull, not, gte } from 'drizzle-orm';
 
@@ -49,7 +50,41 @@ function addMemoryNotification(userId: number, title: string, message: string, t
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Credential scrub, registered BEFORE every route including setupAuth's, so nothing can
+  // be added later that escapes it. The storage layer returns whole user rows and nests them
+  // inside appointments, schedules and favourites, so a password or MPIN hash can appear at
+  // any depth of almost any response. Sanitizing per handler was tried and failed: it missed
+  // most paths and one call was a no-op against a nested shape. A chokepoint cannot be
+  // out-of-date with the route list.
+  app.use('/api', (_req, res, next) => {
+    const sendJson = res.json.bind(res);
+    res.json = (body?: any) => sendJson(stripSensitive(body));
+    next();
+  });
+
   setupAuth(app);
+
+  // Staff-directory gate, shared by every route that lists user accounts.
+  //
+  // These endpoints hand out `username`, which is the login identifier for POST /api/login,
+  // together with the clinic that account belongs to -- the whole input set for password
+  // spraying. Role alone is not enough: the listing routes take a clinic id straight from the
+  // query string, so without scoping an attender at one clinic reads every other clinic's
+  // staff. Written once because it was previously copied per route and the copies drifted.
+  const STAFF_DIRECTORY_ROLES = ['super_admin', 'clinic_admin', 'attender', 'doctor'];
+  const requireClinicScope = (req: Request, res: Response, next: () => void) => {
+    if (!req.user) return res.sendStatus(401);
+    if (!STAFF_DIRECTORY_ROLES.includes(req.user.role)) return res.sendStatus(403);
+    if (req.user.role === 'super_admin') return next();
+    const own = req.user.clinicId;
+    if (!own) return res.sendStatus(403);
+    const asked = req.query.clinicId ? parseInt(req.query.clinicId as string) : own;
+    if (asked !== own) return res.sendStatus(403);
+    // Pinned, so a handler that falls back to an unscoped query when clinicId is absent
+    // cannot be reached by simply omitting the parameter.
+    req.query.clinicId = String(own);
+    next();
+  };
 
   app.get("/api/doctors", async (req, res) => {
     const { lat, lng, radius, specialty } = req.query;
@@ -67,7 +102,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else {
         doctors = await storage.getDoctors();
       }
-      res.json(doctors);
+      // Public by design -- patients browse doctors without logging in -- so what it
+      // returns matters more here than anywhere. The storage methods select whole rows,
+      // which meant this endpoint served every doctor's scrypt password and MPIN hashes
+      // to anyone who asked.
+      res.json(stripForPublic(doctors));
     } catch (error) {
       console.error('Error fetching doctors:', error);
       res.status(500).json({ message: 'Failed to fetch doctors' });
@@ -314,7 +353,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!doctor || doctor.role !== 'doctor') {
         return res.status(404).json({ message: 'Doctor not found' });
       }
-      res.json(doctor);
+      res.json(stripForPublic(doctor));
     } catch (error) {
       console.error('Error fetching doctor:', error);
       res.status(500).json({ message: 'Failed to fetch doctor' });
@@ -336,7 +375,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const clinicId = parseInt(req.params.id);
       const doctors = await storage.getDoctorsByClinic(clinicId);
-      res.json(doctors);
+      res.json(stripForPublic(doctors));
     } catch (error) {
       console.error('Error fetching clinic doctors:', error);
       res.status(500).json({ message: 'Failed to fetch clinic doctors' });
@@ -374,7 +413,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const clinicId = parseInt(req.params.id);
       const doctors = await storage.getDoctorsWithSchedulesByClinic(clinicId);
-      res.json(doctors);
+      res.json(stripForPublic(doctors));
     } catch (error) {
       console.error('Error fetching clinic doctors with schedules:', error);
       res.status(500).json({ message: 'Failed to fetch doctors with schedules' });
@@ -1337,8 +1376,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Attender routes
-  app.get("/api/attenders", async (req, res) => {
-    if (!req.user) return res.sendStatus(401);
+  app.get("/api/attenders", requireClinicScope, async (req, res) => {
     try {
       let attenders;
       if (req.query.clinicId) {
@@ -1346,21 +1384,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else {
         attenders = await storage.getAttendersByRole();
       }
-      res.json(attenders);
+      res.json(sanitizeUsers(attenders));
     } catch (error) {
       console.error('Error fetching attenders:', error);
       res.status(500).json({ message: 'Failed to fetch attenders' });
     }
   });
 
-  app.get("/api/attenders/:id", async (req, res) => {
-    if (!req.user) return res.sendStatus(401);
+  app.get("/api/attenders/:id", requireClinicScope, async (req, res) => {
     try {
       const attender = await storage.getUser(parseInt(req.params.id));
       if (!attender || attender.role !== 'attender') {
         return res.status(404).json({ message: 'Attender not found' });
       }
-      res.json(attender);
+      // Same 404 for "not yours" as for "does not exist": a distinguishable response would
+      // let any staff account enumerate which ids are attenders at other clinics.
+      if (req.user!.role !== 'super_admin' && attender.clinicId !== req.user!.clinicId) {
+        return res.status(404).json({ message: 'Attender not found' });
+      }
+      res.json(sanitizeUser(attender));
     } catch (error) {
       console.error('Error fetching attender:', error);
       res.status(500).json({ message: 'Failed to fetch attender' });
@@ -2529,7 +2571,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const doctors = await storage.getAvailableDoctors(clinicId, scheduleDate, time);
-      res.json(doctors);
+      res.json(stripForPublic(doctors));
     } catch (error) {
       console.error('Error fetching available doctors:', error);
       res.status(500).json({ message: 'Failed to fetch available doctors' });
@@ -3169,7 +3211,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         const clinicId = parseInt(req.params.clinicId);
         const doctors = await storage.getDoctorsByClinic(clinicId);
-        res.json(doctors);
+        res.json(sanitizeUsers(doctors));
       } catch (error) {
         console.error('Error fetching clinic doctors:', error);
         res.status(500).json({ message: 'Failed to fetch doctors' });
@@ -3189,7 +3231,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         const attenderId = requestedId;
         const doctors = await storage.getAttenderDoctors(attenderId);
-        res.json(doctors);
+        res.json(sanitizeUsers(doctors));
       } catch (error) {
         console.error('Error fetching clinic doctors:', error);
         res.status(500).json({ message: 'Failed to fetch doctors' });
@@ -3375,7 +3417,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // Get users by role and clinicId
-    app.get("/api/users", async (req, res) => {
+    // Staff directory. This had no authentication at all, and the storage methods behind it
+    // select whole rows, so an anonymous caller could read every DOCTOR and ATTENDER record
+    // in the deployment complete with scrypt password and MPIN hashes. (Not patients: the
+    // ?role=patient path falls through to getDoctors(), which filters to role = doctor and
+    // so returns nothing — despite what the comment further down claims.)
+    //
+    // Scoped to one clinic for everyone but super_admin. Role alone is not enough: both
+    // remaining branches take a clinic id straight from the query string, so an attender at
+    // one clinic could read another clinic's staff directory, and usernames here are the
+    // login identifier for POST /api/login.
+    //
+    // The only caller is the clinic management page (clinic-view.tsx), which always passes
+    // its own clinicId, so this costs it nothing.
+    app.get("/api/users", requireClinicScope, async (req, res) => {
       try {
         const { role, clinicId } = req.query;
 
@@ -3388,19 +3443,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const users = await storage.getAttendersByClinic(parseInt(clinicId as string));
           // Filter by role if specified
           const filteredUsers = role ? users.filter(user => user.role === role) : users;
-          return res.json(filteredUsers);
+          return res.json(sanitizeUsers(filteredUsers));
         }
 
         // If role is attender, use the specific method
         if (role === 'attender') {
           const attenders = await storage.getAttendersByRole();
-          return res.json(attenders);
+          return res.json(sanitizeUsers(attenders));
         }
 
         // Otherwise get all users and filter by role
-        const allUsers = await storage.getDoctors(); // This actually gets all users despite the name
+        // NB: getDoctors() filters to role = doctor. An older comment here claimed it
+        // returned all users; it does not, so ?role=patient yields an empty list.
+        const allUsers = await storage.getDoctors();
         const filteredUsers = allUsers.filter(user => user.role === role);
-        res.json(filteredUsers);
+        res.json(sanitizeUsers(filteredUsers));
       } catch (error) {
         console.error('Error fetching users:', error);
         res.status(500).json({ message: 'Failed to fetch users' });
@@ -3486,7 +3543,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         validatedData.details
       );
 
-      res.json(doctor);
+      res.json(sanitizeUser(doctor));
     } catch (error) {
       console.error("Error updating doctor:", error);
       if (error instanceof z.ZodError) {
@@ -3508,7 +3565,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Debug route to test schedule cancellation notifications
+    // super_admin only. These fire real push notifications to real patients, and they were
+    // open to anyone: the schedule id is a sequential integer, so an anonymous caller could
+    // walk it and notify every patient in the system.
   app.post("/api/debug/test-cancel-notification/:scheduleId", async (req, res) => {
+    if (!req.user || req.user.role !== 'super_admin') return res.sendStatus(403);
     try {
       const scheduleId = parseInt(req.params.scheduleId);
       const { cancelReason } = req.body;
@@ -3593,7 +3654,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Debug route to test notifications
+    // super_admin only. These fire real push notifications to real patients, and they were
+    // open to anyone: the schedule id is a sequential integer, so an anonymous caller could
+    // walk it and notify every patient in the system.
   app.post("/api/debug/test-notification/:scheduleId", async (req, res) => {
+    if (!req.user || req.user.role !== 'super_admin') return res.sendStatus(403);
     try {
       const scheduleId = parseInt(req.params.scheduleId);
       console.log(`DEBUG: Testing notification for schedule ${scheduleId}`);
@@ -3661,7 +3726,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         doctors = await storage.getDoctorsByAttender(req.user.id);
       }
       
-      res.json(doctors);
+      res.json(sanitizeUsers(doctors));
     } catch (error) {
       console.error("Error fetching doctors:", error);
       res.status(500).json({ message: "Failed to fetch doctors" });
