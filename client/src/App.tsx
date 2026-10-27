@@ -45,6 +45,7 @@ import ContactUs from "@/pages/help/ContactUs";
 import MapPage from "@/pages/map-page";
 import LandingPage from "@/pages/landing-page";
 import UserProfile from "@/pages/user-profile";
+import PaymentReceiptPage from "@/pages/payment-receipt";
 
 // Wrap DoctorManagementPage with ProtectedRoute
 const ProtectedDoctorManagement = () => (
@@ -120,6 +121,8 @@ function Router() {
       <Route path="/book/:doctorId" component={PatientBookingPage} />
       <Route path="/doctor/bookings" component={DoctorBookingPage} />
       <Route path="/appointments" component={BookingHistoryPage} />
+      {/* Where HDFC sends the patient back to. Reads the order id from the query string. */}
+      <Route path="/payment/receipt" component={PaymentReceiptPage} />
       <Route path="/attender-dashboard" component={ProtectedAttenderDashboard} />
       {/* <Route path="/super-admin-dashboard" component={SuperAdminDashboard} /> */}
       <Route path="/doctor-creation" component={DoctorCreation} />
