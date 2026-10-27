@@ -156,6 +156,86 @@ export class PaymentService {
     });
   }
 
+  /**
+   * Everything the payment receipt shows, read from OUR database.
+   *
+   * HDFC's audit requires the response page to show the order number, the amount and a
+   * success message. None of that may travel in the redirect's query string: the patient
+   * can edit a URL, and a receipt that believes what the URL says is exactly the response
+   * tampering the same checklist asks us to prevent. The browser carries only the order
+   * id; every displayed value is read back from the row the gateway settled.
+   *
+   * Authorized by the order id ITSELF, not by the session -- a capability link, like an
+   * order-confirmation URL. This is deliberate and it is not laziness:
+   *
+   *   - Patient sessions last 30 minutes from login with no `rolling` (auth.ts), while the
+   *     checkout hold is 20 and a UPI collect or 3DS challenge routinely eats most of it.
+   *     Someone who browsed a while before paying returns with an expired cookie, and a
+   *     session-scoped receipt would 403 exactly when the bank's audit requires the order
+   *     number and amount to be on screen.
+   *   - The id is 'CF' + 8 random bytes: 64 bits, unguessable, and already trusted for
+   *     non-enumerability. Knowing one reveals one booking's fee breakdown, token and
+   *     doctor -- no credential, no PII beyond the booking, and nothing writable.
+   *
+   * The trade is that anyone holding the id can read that one receipt. That is the same
+   * bargain every emailed order link makes, and it beats telling a patient who just paid
+   * that we cannot find their payment.
+   */
+  async getReceipt(orderId: string): Promise<{
+    orderId: string;
+    gatewayPaymentId: string | null;
+    amount: string;
+    platformFee: string;
+    gstAmount: string;
+    status: string;
+    paidAt: Date | null;
+    /** True when the money went to the wallet instead of a token. Read from the payment's
+     *  own wallet_transaction_id rather than inferred from a missing appointment, which is
+     *  also what a stranded payment awaiting repair looks like. */
+    creditedToWallet: boolean;
+    appointment: {
+      id: number;
+      tokenNumber: number | null;
+      date: Date | string | null;
+      doctorName: string | null;
+      /** So a receipt reopened after a cancellation does not still claim a live token. */
+      status: string | null;
+    } | null;
+  } | undefined> {
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.gatewayOrderId, orderId));
+
+    if (!payment) return undefined;
+
+    let appointment = null;
+    if (payment.appointmentId) {
+      const appt = await storage.getAppointment(payment.appointmentId);
+      if (appt) {
+        const doctor = appt.doctorId ? await storage.getUser(appt.doctorId) : undefined;
+        appointment = {
+          id: appt.id,
+          tokenNumber: appt.tokenNumber ?? null,
+          date: appt.date ?? null,
+          doctorName: doctor?.name ?? null,
+          status: appt.status ?? null,
+        };
+      }
+    }
+
+    return {
+      orderId,
+      gatewayPaymentId: payment.gatewayPaymentId ?? null,
+      amount: payment.amount,
+      platformFee: payment.platformFee,
+      gstAmount: payment.gstAmount,
+      status: payment.status,
+      paidAt: payment.updatedAt ?? payment.createdAt ?? null,
+      creditedToWallet: payment.walletTransactionId != null,
+      appointment,
+    };
+  }
   /** Most recent successful payment for an appointment, if any. */
   async getPaymentForAppointment(appointmentId: number): Promise<Payment | undefined> {
     const [payment] = await db
@@ -374,6 +454,31 @@ export class PaymentService {
     // The authority. Throws if HDFC is unreachable -- callers let that propagate so the
     // order stays at 'created' and the sweep retries, rather than being wrongly failed.
     const order = await hdfcGateway.getOrderStatus(orderId, String(payment.patientId));
+
+    // An ALLOWLIST, never the whole object. HDFC's audit asks for order-status evidence and
+    // this is the single input every settlement decision below is made from, so it has to be
+    // logged -- but getOrderStatus casts the response rather than parsing it, so the object
+    // carries every field HDFC sent, not the few HdfcOrderStatus declares. A real
+    // SmartGateway payload includes customer_email, customer_phone, payer_vpa and, for card
+    // payments, a `card` block with the holder's name, BIN, last four and expiry. Serialising
+    // it would write patient PII and cardholder data into the container logs -- which outlive,
+    // replicate further and are read more widely than the payments table -- on every poll,
+    // and the sweep re-polls an abandoned order for up to two hours.
+    // Via `unknown` because HdfcOrderStatus declares only the fields we branch on, while
+    // the object genuinely carries more — that gap is the whole reason for this allowlist.
+    const raw = order as unknown as Record<string, unknown>;
+    console.log('[hdfc] order status', {
+      order_id: raw.order_id,
+      status: raw.status,
+      status_id: raw.status_id,
+      amount: raw.amount,
+      id: raw.id,
+      txn_id: raw.txn_id,
+      payment_method_type: raw.payment_method_type,
+      resp_code: raw.resp_code,
+      resp_message: raw.resp_message,
+      bank_error_code: raw.bank_error_code,
+    });
 
     // Still in flight. Distinct from failure: a UPI collect or 3DS challenge is routinely
     // unfinished when the browser returns, and telling the patient it failed makes them

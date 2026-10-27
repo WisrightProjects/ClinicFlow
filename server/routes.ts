@@ -829,6 +829,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Reads back what was actually settled, for the payment receipt page.
+  //
+  // HDFC's audit requires the response page to display the order number, the amount and a
+  // success message in real time. They are served from here rather than from the redirect's
+  // query string so the patient cannot edit them -- a receipt that trusts its own URL is the
+  // response tampering the audit checklist asks us to prevent.
+  //
+  // Deliberately NOT session-gated. A patient session lasts 30 minutes from login and does
+  // not roll, so someone who browsed before paying and then spent ten minutes on a UPI
+  // collect comes back with no cookie -- and 403ing here would blank the one page the audit
+  // exists to check. The 64-bit random order id is the capability; see getReceipt.
+  app.get("/api/payments/receipt/:orderId", async (req, res) => {
+    try {
+      const receipt = await paymentService.getReceipt(String(req.params.orderId));
+      if (!receipt) return res.status(404).json({ message: 'Payment not found' });
+      res.json(receipt);
+    } catch (error) {
+      console.error('Error loading payment receipt:', error);
+      res.status(500).json({ message: 'Could not load the payment receipt' });
+    }
+  });
   // Step 2a: the patient's browser comes back here from HDFC.
   //
   // The session cookie is NOT available: auth.ts sets sameSite "lax", which browsers do
@@ -846,8 +867,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // is the worst possible outcome here.
       switch (result.outcome) {
         case 'booked':
+          // To the receipt, not straight to the list: the audit requires a response page
+          // showing the order number and amount, and only the order id can be trusted to
+          // travel in the URL -- the page reads the rest back from the settled row.
           return res.redirect(
-            `/appointments?payment=success&token=${result.appointment.tokenNumber ?? ''}`
+            `/payment/receipt?order_id=${encodeURIComponent(orderId)}`
           );
         case 'refunded_to_wallet':
           return res.redirect(
@@ -868,7 +892,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
           return res.redirect(
             result.settledAs === 'booked'
-              ? '/appointments?payment=success'
+              ? `/payment/receipt?order_id=${encodeURIComponent(orderId)}`
               : '/appointments?payment=pending'
           );
         default:
