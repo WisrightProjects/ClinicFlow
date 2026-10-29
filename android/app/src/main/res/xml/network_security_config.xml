@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Trust anchors for every build except `uat`, whose source set replaces this whole file.
+  How that override works is documented once, in the `uat` block of app/build.gradle.
+
+  Mostly this writes down Android's own default, so a security assessment can be answered
+  by pointing at a file rather than at an absent default. Two things it is worth not
+  overstating:
+
+    - Below API 24 the platform ignores a network security config entirely, and
+      minSdkVersion is 22 (variables.gradle). On Android 5.1-6.0 the user certificate
+      store IS trusted and nothing in this file applies.
+
+    - cleartextTrafficPermitted is not redundant. The targetSdk-conditional default
+      arrived with the Android 9 framework, so an API 24-27 device permits cleartext
+      whatever the app targets. It duplicates `server.cleartext` in capacitor.config.ts,
+      which expresses the same policy through Capacitor and which this file silently
+      overrides on API 24+ - so the two must be changed together.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <!-- System CAs only: a certificate installed by the device's user - or by
+                 someone with physical or social access to it - is not trusted, so the
+                 app's TLS traffic cannot be intercepted by a proxy. -->
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
