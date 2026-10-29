@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  UAT / SECURITY-ASSESSMENT BUILD ONLY. Never ship this variant - see app/build.gradle.
+
+  Adds user-installed CA certificates to the trust anchors so a test proxy (Burp, Charles)
+  can intercept TLS, which HDFC's pre-go-live assessment requires. Under the platform
+  default the WebView silently cancels a top-level navigation whose certificate a proxy
+  has re-signed, and Capacitor's BridgeWebViewClient installs no onReceivedSslError
+  handler, so the failure shows as a blank screen with no error at all.
+
+  Why this must not reach production: anyone who could place a certificate on a patient's
+  phone would then be able to read their session cookie and their payment traffic.
+
+  cleartextTrafficPermitted stays false. The proxy speaks HTTPS, so relaxing it would
+  weaken the assessment build for no benefit.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <!-- The one line that separates this build from release. -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,5 +1,15 @@
 apply plugin: 'com.android.application'
 
+// Signing credentials, read from android/keystore.properties when it exists.
+// That file is gitignored and holds the release keystore passwords, so a signed build
+// needs no secrets on the command line (where they reach the shell history) and none in
+// the repository. Environment variables still win when set, which is how CI would do it.
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file('keystore.properties')
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
 android {
     namespace "com.wisright.clinikflow"
     compileSdk rootProject.ext.compileSdkVersion
@@ -7,8 +17,8 @@ android {
         applicationId "com.wisright.clinikflow"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "1.0"
+        versionCode 4
+        versionName "1.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -18,10 +28,10 @@ android {
     }
     signingConfigs {
         release {
-            storeFile file(System.getenv('KEYSTORE_PATH') ?: 'clinik-release.keystore')
-            storePassword System.getenv('KEYSTORE_PASSWORD') ?: ''
-            keyAlias System.getenv('KEY_ALIAS') ?: 'clinik'
-            keyPassword System.getenv('KEY_PASSWORD') ?: ''
+            storeFile file(System.getenv('KEYSTORE_PATH') ?: keystoreProps.getProperty('storeFile', 'clinik-release.keystore'))
+            storePassword System.getenv('KEYSTORE_PASSWORD') ?: keystoreProps.getProperty('storePassword', '')
+            keyAlias System.getenv('KEY_ALIAS') ?: keystoreProps.getProperty('keyAlias', 'clinik')
+            keyPassword System.getenv('KEY_PASSWORD') ?: keystoreProps.getProperty('keyPassword', '')
         }
     }
     buildTypes {
@@ -30,6 +40,62 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
+        // The build handed to HDFC for their pre-go-live security assessment. Identical to
+        // release - same code, same signing key, not debuggable - except that it trusts
+        // user-installed CA certificates, so their test proxy can intercept TLS.
+        //
+        // That difference comes entirely from src/uat/res/xml/network_security_config.xml.
+        // An Android source set replaces a resource file wholesale, so the permissive config
+        // is not merely inert in a release artifact - it is absent from it.
+        //
+        // NEVER hand this variant to the Play Store: trusting user CAs permits a
+        // man-in-the-middle on a patient's session and payment traffic. Hand it over by
+        // direct file transfer, and delete it once the assessment is finished.
+        //
+        // Build it with `npm run build:android:uat`, which syncs the web assets first.
+        // `npx cap build android` cannot reach it: the Capacitor CLI only ever runs
+        // assemble/bundle<Flavor>Release, so a non-release build type is unreachable there.
+        uat {
+            initWith release
+            // So a tester can confirm from Android settings which build they installed.
+            // applicationId deliberately stays the same: google-services.json is bound to
+            // com.wisright.clinikflow, and an applicationIdSuffix breaks push notifications.
+            versionNameSuffix "-uat"
+            // The Capacitor modules are local library projects carrying only debug and
+            // release variants, and release declares no matchingFallbacks for `initWith` to
+            // copy - so without this Gradle cannot resolve a 'uat' configuration against
+            // them and the build fails at dependency resolution.
+            matchingFallbacks = ['release']
+        }
+    }
+}
+
+// The uat variant is sideload-only: HDFC installs the APK by direct file transfer. An
+// Android App Bundle is the only format the Play Store accepts, so refusing to produce a
+// uat AAB is what turns "never upload this build" from a comment into something the build
+// refuses to do.
+//
+// Enforced on the task graph rather than by disabling tasks. Disabling `bundleUat` and
+// `packageUatBundle` individually does NOT work: AGP still runs `signUatBundle`, which
+// fails on its own and leaves a truncated .aab behind. Throwing before anything executes
+// leaves no artifact at all, and says why.
+gradle.taskGraph.whenReady { graph ->
+    def offender = graph.allTasks.find {
+        def n = it.name.toLowerCase()
+        // Deliberately a loose match on name rather than an allowlist of AGP task names:
+        // if AGP renames a task, a loose match still catches it, whereas an allowlist would
+        // silently stop guarding. The one exclusion is for `bundleUatClassesTo*Jar`, which
+        // builds a jar for lint and produces no AAB - without it `gradlew build` and `check`
+        // fail, which is collateral damage rather than protection.
+        n.contains('uat') && n.contains('bundle') && !n.contains('classes')
+    }
+    if (offender != null) {
+        throw new GradleException(
+            'Refusing to build an Android App Bundle of the uat variant: ' + offender.name +
+            '. That build trusts user-installed CA certificates and must never reach the ' +
+            'Play Store, which accepts AABs only. Use `npm run build:android:uat` for the ' +
+            'sideload APK, or `bundleRelease` for the Play Store artifact.'
+        )
     }
 }
 
